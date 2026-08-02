@@ -95,7 +95,7 @@ One server accepts one BLE client at a time. That client may carry up to 32 TCP 
 ## Troubleshooting
 
 - No scan results: confirm Bluetooth is enabled, the server is advertising, and the adapter supports BLE. Windows uses the connectable GATT service advertisement directly and may show the server as `(unnamed)` because WinRT does not let this application attach a local name to that advertisement.
-- Advertisement diagnosis: run `lightningbnb scan --timeout 15s --all` to list unfiltered BLE advertisements, service UUIDs, service data, and manufacturer data. A Windows LightningBNB server should include service data `13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0=4c424e4231`.
+- Advertisement diagnosis: run `lightningbnb scan --timeout 15s --all` to list unfiltered BLE advertisements, service UUIDs, service data, and manufacturer data. A Windows LightningBNB server should include `13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0` in `SERVICE_UUIDS`.
 - Linux permission errors: verify BlueZ is running and that the account can use `org.bluez` through the system D-Bus. Distribution policies vary.
 - macOS abort or permission errors: grant Bluetooth access to the terminal application, then restart it.
 - Server reports unsupported mode on macOS: this is intentional in v1; run the server on Windows or Linux.

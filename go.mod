@@ -4,8 +4,6 @@ go 1.25.0
 
 require tinygo.org/x/bluetooth v0.15.0
 
-replace tinygo.org/x/bluetooth => ./third_party/bluetooth-v0.15.0
-
 require (
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect

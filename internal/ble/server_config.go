@@ -4,8 +4,7 @@ import "tinygo.org/x/bluetooth"
 
 func transportService(rx, tx *bluetooth.Characteristic, onWrite bluetooth.WriteEvent) bluetooth.Service {
 	return bluetooth.Service{
-		UUID:        ServiceUUID,
-		ServiceData: append([]byte(nil), marker...),
+		UUID: ServiceUUID,
 		Characteristics: []bluetooth.CharacteristicConfig{
 			{
 				Handle:     rx,

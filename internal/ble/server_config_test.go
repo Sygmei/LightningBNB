@@ -1,7 +1,6 @@
 package ble
 
 import (
-	"bytes"
 	"testing"
 
 	"tinygo.org/x/bluetooth"
@@ -15,9 +14,6 @@ func TestTransportServiceRegistersBothCharacteristicHandles(t *testing.T) {
 	service := transportService(&rx, &tx, onWrite)
 	if service.UUID != ServiceUUID {
 		t.Fatalf("service UUID = %s", service.UUID)
-	}
-	if !bytes.Equal(service.ServiceData, marker) {
-		t.Fatalf("service data = %q", service.ServiceData)
 	}
 	if len(service.Characteristics) != 2 {
 		t.Fatalf("characteristic count = %d", len(service.Characteristics))
@@ -35,19 +31,6 @@ func TestTransportServiceRegistersBothCharacteristicHandles(t *testing.T) {
 	}
 	if txConfig.Flags != bluetooth.CharacteristicNotifyPermission {
 		t.Fatal("TX characteristic does not support notifications")
-	}
-}
-
-func TestServiceDataAdvertisementIsDiscoverable(t *testing.T) {
-	payload := testAdvertisementPayload{
-		serviceData: []bluetooth.ServiceDataElement{{UUID: ServiceUUID, Data: append([]byte(nil), marker...)}},
-	}
-	if !isLightningBNB(payload) {
-		t.Fatal("LightningBNB service-data advertisement was not recognized")
-	}
-	payload.serviceData[0].Data = []byte("other")
-	if isLightningBNB(payload) {
-		t.Fatal("foreign service data was recognized as LightningBNB")
 	}
 }
 
