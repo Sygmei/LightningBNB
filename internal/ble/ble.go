@@ -242,6 +242,11 @@ func isLightningBNB(payload bluetooth.AdvertisementPayload) bool {
 	if payload.HasServiceUUID(ServiceUUID) {
 		return true
 	}
+	for _, item := range payload.ServiceData() {
+		if item.UUID == ServiceUUID && bytes.HasPrefix(item.Data, marker) {
+			return true
+		}
+	}
 	for _, item := range payload.ManufacturerData() {
 		if item.CompanyID == TestCompanyID && bytes.HasPrefix(item.Data, marker) {
 			return true
