@@ -1,0 +1,2 @@
+# LightningBNB
+Lightning-fast BluetoothNetworkBridge
