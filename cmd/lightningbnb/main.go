@@ -34,13 +34,14 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 	case "scan":
 		flags := newFlagSet("scan", errorOutput)
 		timeout := flags.Duration("timeout", 5*time.Second, "how long to scan for LightningBNB servers")
+		all := flags.Bool("all", false, "show all BLE advertisements and payload details for diagnostics")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
 		if *timeout <= 0 {
 			return errors.New("--timeout must be greater than zero")
 		}
-		return app.Scan(ctx, *timeout, output)
+		return app.Scan(ctx, *timeout, *all, output)
 
 	case "client":
 		flags := newFlagSet("client", errorOutput)
@@ -144,7 +145,7 @@ func flagError(err error) error {
 
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, `Usage:
-  lightningbnb scan [--timeout 5s]
+  lightningbnb scan [--timeout 5s] [--all]
   lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--device ID]
   lightningbnb server --target-port PORT [--target-host localhost]
   lightningbnb version`)

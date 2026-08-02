@@ -51,6 +51,38 @@ func TestServiceDataAdvertisementIsDiscoverable(t *testing.T) {
 	}
 }
 
+func TestAdvertisementDetailsAndDeviceMerge(t *testing.T) {
+	payload := testAdvertisementPayload{
+		serviceUUIDs: []bluetooth.UUID{ServiceUUID},
+		serviceData:  []bluetooth.ServiceDataElement{{UUID: ServiceUUID, Data: append([]byte(nil), marker...)}},
+		manufacturerData: []bluetooth.ManufacturerDataElement{{
+			CompanyID: TestCompanyID,
+			Data:      []byte("legacy"),
+		}},
+	}
+	services, serviceData, manufacturerData := advertisementDetails(payload)
+	if len(services) != 1 || services[0] != ServiceUUIDString {
+		t.Fatalf("services = %v", services)
+	}
+	if len(serviceData) != 1 || serviceData[0] != ServiceUUIDString+"=4c424e4231" {
+		t.Fatalf("service data = %v", serviceData)
+	}
+	if len(manufacturerData) != 1 || manufacturerData[0] != "ffff=6c6567616379" {
+		t.Fatalf("manufacturer data = %v", manufacturerData)
+	}
+
+	merged := mergeDevice(
+		Device{Name: "named", LightningBNB: true, ServiceUUIDs: services},
+		Device{RSSI: -20, ServiceData: serviceData},
+	)
+	if merged.Name != "named" || !merged.LightningBNB || merged.RSSI != -20 {
+		t.Fatalf("merged device = %+v", merged)
+	}
+	if len(merged.ServiceUUIDs) != 1 || len(merged.ServiceData) != 1 {
+		t.Fatalf("merged payload = %+v", merged)
+	}
+}
+
 func TestWindowsUsesOnlyGattServiceAdvertisement(t *testing.T) {
 	if _, start := genericAdvertisementOptions("windows", "LightningBNB"); start {
 		t.Fatal("Windows must not start a separate non-connectable advertisement")

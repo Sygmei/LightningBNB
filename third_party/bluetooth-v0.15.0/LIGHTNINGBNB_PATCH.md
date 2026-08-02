@@ -11,5 +11,10 @@ advertisement. The upstream generic Windows advertisement publisher cannot be
 used for this purpose because that is a separate, non-connectable
 advertisement.
 
+The patch also retains the WinRT service-provider object for the service's
+lifetime and waits for its asynchronous advertisement status. Startup fails
+with an actionable error when Windows aborts advertising or omits the required
+service data.
+
 Remove this patch when upstream exposes service data on connectable Windows
 GATT advertisements.

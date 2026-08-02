@@ -1,13 +1,16 @@
 package bluetooth
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
 	"github.com/saltosystems/winrt-go"
+	winbluetooth "github.com/saltosystems/winrt-go/windows/devices/bluetooth"
 	"github.com/saltosystems/winrt-go/windows/devices/bluetooth/genericattributeprofile"
 	"github.com/saltosystems/winrt-go/windows/foundation"
 	"github.com/saltosystems/winrt-go/windows/foundation/collections"
@@ -44,10 +47,23 @@ func (a *Adapter) AddService(s *Service) error {
 	}
 
 	serviceProviderResult := (*genericattributeprofile.GattServiceProviderResult)(res)
+	creationStatus, err := serviceProviderResult.GetError()
+	if err != nil {
+		return err
+	}
+	if creationStatus != winbluetooth.BluetoothErrorSuccess {
+		return fmt.Errorf("create Windows GATT service: Bluetooth error %d", creationStatus)
+	}
 	serviceProvider, err := serviceProviderResult.GetServiceProvider()
 	if err != nil {
 		return err
 	}
+	keepProvider := false
+	defer func() {
+		if !keepProvider {
+			serviceProvider.Release()
+		}
+	}()
 
 	localService, err := serviceProvider.GetService()
 	if err != nil {
@@ -256,11 +272,44 @@ func (a *Adapter) AddService(s *Service) error {
 		}
 	}
 
-	return serviceProvider.StartAdvertisingWithParameters(params)
+	if err = serviceProvider.StartAdvertisingWithParameters(params); err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status, statusErr := serviceProvider.GetAdvertisementStatus()
+		if statusErr != nil {
+			_ = serviceProvider.StopAdvertising()
+			return statusErr
+		}
+		switch status {
+		case genericattributeprofile.GattServiceProviderAdvertisementStatusStarted:
+			s.native = serviceProvider
+			keepProvider = true
+			return nil
+		case genericattributeprofile.GattServiceProviderAdvertisementStatusStartedWithoutAllAdvertisementData:
+			_ = serviceProvider.StopAdvertising()
+			return errors.New("Windows GATT advertising started without the required LightningBNB service data")
+		case genericattributeprofile.GattServiceProviderAdvertisementStatusAborted:
+			return errors.New("Windows GATT advertising was aborted; verify that the Bluetooth adapter supports the LE peripheral role")
+		}
+		if time.Now().After(deadline) {
+			_ = serviceProvider.StopAdvertising()
+			return fmt.Errorf("Windows GATT advertising did not start; WinRT status %d", status)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 // RemoveService stops advertising the service and removes it.
 func (a *Adapter) RemoveService(s *Service) error {
+	if serviceProvider, ok := s.native.(*genericattributeprofile.GattServiceProvider); ok {
+		s.native = nil
+		err := serviceProvider.StopAdvertising()
+		serviceProvider.Release()
+		return err
+	}
 	gattServiceOp, err := genericattributeprofile.GattServiceProviderCreateAsync(syscallUUIDFromUUID(s.UUID))
 
 	if err != nil {

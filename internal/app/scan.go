@@ -5,20 +5,50 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Sygmei/LightningBNB/internal/ble"
 )
 
-func Scan(ctx context.Context, timeout time.Duration, output io.Writer) error {
+func Scan(ctx context.Context, timeout time.Duration, all bool, output io.Writer) error {
 	adapter := ble.NewAdapter()
-	devices, err := adapter.Scan(ctx, timeout)
+	var devices []ble.Device
+	var err error
+	if all {
+		devices, err = adapter.ScanAll(ctx, timeout)
+	} else {
+		devices, err = adapter.Scan(ctx, timeout)
+	}
 	if err != nil {
 		return err
 	}
 	sortDevices(devices)
 	if len(devices) == 0 {
-		_, _ = fmt.Fprintln(output, "No LightningBNB servers found.")
+		if all {
+			_, _ = fmt.Fprintln(output, "No BLE advertisements found.")
+		} else {
+			_, _ = fmt.Fprintln(output, "No LightningBNB servers found.")
+		}
+		return nil
+	}
+	if all {
+		_, _ = fmt.Fprintln(output, "ID\tRSSI\tLIGHTNINGBNB\tNAME\tSERVICE_UUIDS\tSERVICE_DATA\tMANUFACTURER_DATA")
+		for _, device := range devices {
+			name := strings.ReplaceAll(device.Name, "\t", " ")
+			if name == "" {
+				name = "(unnamed)"
+			}
+			_, _ = fmt.Fprintf(output, "%s\t%d\t%t\t%s\t%s\t%s\t%s\n",
+				device.ID,
+				device.RSSI,
+				device.LightningBNB,
+				name,
+				strings.Join(device.ServiceUUIDs, ","),
+				strings.Join(device.ServiceData, ","),
+				strings.Join(device.ManufacturerData, ","),
+			)
+		}
 		return nil
 	}
 	_, _ = fmt.Fprintln(output, "ID\tRSSI\tNAME")

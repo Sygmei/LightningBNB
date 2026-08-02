@@ -29,9 +29,13 @@ var (
 )
 
 type Device struct {
-	ID   string
-	Name string
-	RSSI int16
+	ID               string
+	Name             string
+	RSSI             int16
+	LightningBNB     bool
+	ServiceUUIDs     []string
+	ServiceData      []string
+	ManufacturerData []string
 
 	address bluetooth.Address
 }
@@ -66,6 +70,14 @@ func (a *Adapter) Enable() error {
 }
 
 func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, error) {
+	return a.scan(ctx, duration, true)
+}
+
+func (a *Adapter) ScanAll(ctx context.Context, duration time.Duration) ([]Device, error) {
+	return a.scan(ctx, duration, false)
+}
+
+func (a *Adapter) scan(ctx context.Context, duration time.Duration, onlyLightningBNB bool) ([]Device, error) {
 	if err := a.Enable(); err != nil {
 		return nil, fmt.Errorf("enable Bluetooth: %w", err)
 	}
@@ -82,15 +94,29 @@ func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, e
 	scanErr := make(chan error, 1)
 	go func() {
 		scanErr <- a.native.Scan(func(_ *bluetooth.Adapter, result bluetooth.ScanResult) {
-			if !isLightningBNB(result.AdvertisementPayload) {
+			matches := isLightningBNB(result.AdvertisementPayload)
+			if onlyLightningBNB && !matches {
 				return
 			}
 			name := result.LocalName()
 			if markerName := advertisedMarkerName(result.AdvertisementPayload); markerName != "" {
 				name = markerName
 			}
-			device := Device{ID: result.Address.String(), Name: name, RSSI: result.RSSI, address: result.Address}
+			serviceUUIDs, serviceData, manufacturerData := advertisementDetails(result.AdvertisementPayload)
+			device := Device{
+				ID:               result.Address.String(),
+				Name:             name,
+				RSSI:             result.RSSI,
+				LightningBNB:     matches,
+				ServiceUUIDs:     serviceUUIDs,
+				ServiceData:      serviceData,
+				ManufacturerData: manufacturerData,
+				address:          result.Address,
+			}
 			mu.Lock()
+			if previous, ok := devices[device.ID]; ok {
+				device = mergeDevice(previous, device)
+			}
 			devices[device.ID] = device
 			mu.Unlock()
 		})
@@ -125,6 +151,52 @@ func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, e
 	}
 	mu.Unlock()
 	return result, nil
+}
+
+func advertisementDetails(payload bluetooth.AdvertisementPayload) ([]string, []string, []string) {
+	if payload == nil {
+		return nil, nil, nil
+	}
+	services := make([]string, 0, len(payload.ServiceUUIDs()))
+	for _, uuid := range payload.ServiceUUIDs() {
+		services = appendUnique(services, uuid.String())
+	}
+	serviceData := make([]string, 0, len(payload.ServiceData()))
+	for _, item := range payload.ServiceData() {
+		serviceData = appendUnique(serviceData, fmt.Sprintf("%s=%x", item.UUID, item.Data))
+	}
+	manufacturerData := make([]string, 0, len(payload.ManufacturerData()))
+	for _, item := range payload.ManufacturerData() {
+		manufacturerData = appendUnique(manufacturerData, fmt.Sprintf("%04x=%x", item.CompanyID, item.Data))
+	}
+	return services, serviceData, manufacturerData
+}
+
+func mergeDevice(previous, next Device) Device {
+	if next.Name == "" {
+		next.Name = previous.Name
+	}
+	next.LightningBNB = previous.LightningBNB || next.LightningBNB
+	next.ServiceUUIDs = appendUnique(next.ServiceUUIDs, previous.ServiceUUIDs...)
+	next.ServiceData = appendUnique(next.ServiceData, previous.ServiceData...)
+	next.ManufacturerData = appendUnique(next.ManufacturerData, previous.ManufacturerData...)
+	return next
+}
+
+func appendUnique(values []string, additions ...string) []string {
+	for _, addition := range additions {
+		found := false
+		for _, value := range values {
+			if value == addition {
+				found = true
+				break
+			}
+		}
+		if !found {
+			values = append(values, addition)
+		}
+	}
+	return values
 }
 
 func (a *Adapter) Find(ctx context.Context, id string, duration time.Duration) (Device, error) {

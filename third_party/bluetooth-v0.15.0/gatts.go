@@ -4,6 +4,7 @@ package bluetooth
 type Service struct {
 	id     uint64
 	handle uint16
+	native any
 	UUID
 	Characteristics []CharacteristicConfig
 	// ServiceData is included in the connectable Windows GATT advertisement.
