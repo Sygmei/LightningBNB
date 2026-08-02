@@ -76,7 +76,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 ```text
 --target-host       fixed target hostname, IPv4, or IPv6 address (default localhost)
 --target-port       fixed target TCP port (required)
---name              advertised bridge name (default LightningBNB)
+--name              advertised bridge name (default LightningBNB; Windows may omit it)
 --dial-timeout      target connection timeout (default 10s)
 --resume-timeout    BLE recovery window (default 60s)
 --max-connections   multiplexed TCP connection limit (default 32)
@@ -94,7 +94,7 @@ One server accepts one BLE client at a time. That client may carry up to 32 TCP 
 
 ## Troubleshooting
 
-- No scan results: confirm Bluetooth is enabled, the server is advertising, and the adapter supports BLE. On Windows the advertised display name may be supplied through LightningBNB's manufacturer marker.
+- No scan results: confirm Bluetooth is enabled, the server is advertising, and the adapter supports BLE. Windows uses the connectable GATT service advertisement directly and may show the server as `(unnamed)` because WinRT does not let this application attach a local name to that advertisement.
 - Linux permission errors: verify BlueZ is running and that the account can use `org.bluez` through the system D-Bus. Distribution policies vary.
 - macOS abort or permission errors: grant Bluetooth access to the terminal application, then restart it.
 - Server reports unsupported mode on macOS: this is intentional in v1; run the server on Windows or Linux.

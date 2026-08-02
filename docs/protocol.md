@@ -10,7 +10,7 @@ All multi-byte integers use network byte order (big endian). Receivers reject ma
 | RX (client → server) | `13f0b6a1-4746-4c42-8e2f-1f62e4a0b1a0` | Write with response |
 | TX (server → client) | `13f0b6a2-4746-4c42-8e2f-1f62e4a0b1a0` | Notify |
 
-Linux advertises the service UUID and local name. Windows advertises the GATT service through WinRT and also publishes test manufacturer ID `0xffff` with marker `LBNB1` followed by the configured display name. The marker is for discovery, not authentication.
+Linux advertises the service UUID and local name. Windows advertises the connectable GATT service directly through WinRT. Windows may omit the configured local name, in which case scanners display `(unnamed)` and the platform-specific device identifier remains the selection key. LightningBNB deliberately does not publish a second manufacturer-data advertisement because WinRT's generic advertisement publisher is not the connectable GATT service.
 
 The negotiated packet size is the smaller peer limit, capped at 244 bytes. Bootstrap packets are no larger than the 20-byte minimum ATT value size. Empty and oversized packets are invalid where a payload is required.
 

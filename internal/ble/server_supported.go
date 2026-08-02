@@ -17,6 +17,7 @@ type peripheralServer struct {
 	adapter       *bluetooth.Adapter
 	service       bluetooth.Service
 	advertisement *bluetooth.Advertisement
+	rx            bluetooth.Characteristic
 	tx            bluetooth.Characteristic
 
 	connections chan link.PacketConn
@@ -43,51 +44,25 @@ func StartServer(ctx context.Context, name string) (PeripheralListener, error) {
 		}
 		server.closeCurrent()
 	})
-	server.service = bluetooth.Service{
-		UUID: ServiceUUID,
-		Characteristics: []bluetooth.CharacteristicConfig{
-			{
-				UUID:  RXUUID,
-				Flags: bluetooth.CharacteristicWritePermission,
-				WriteEvent: func(_ bluetooth.Connection, _ int, packet []byte) {
-					server.ensureConnection().push(packet)
-				},
-			},
-			{
-				Handle: &server.tx,
-				UUID:   TXUUID,
-				Flags:  bluetooth.CharacteristicNotifyPermission,
-			},
-		},
-	}
+	server.service = transportService(&server.rx, &server.tx, func(_ bluetooth.Connection, _ int, packet []byte) {
+		server.ensureConnection().push(packet)
+	})
 	if err := adapter.AddService(&server.service); err != nil {
 		return nil, err
 	}
 
-	advertisement := adapter.DefaultAdvertisement()
-	options := bluetooth.AdvertisementOptions{}
-	if runtime.GOOS == "windows" {
-		advertisedName := []byte(name)
-		if len(advertisedName) > 16 {
-			advertisedName = advertisedName[:16]
+	if options, start := genericAdvertisementOptions(runtime.GOOS, name); start {
+		advertisement := adapter.DefaultAdvertisement()
+		if err := advertisement.Configure(options); err != nil {
+			_ = adapter.RemoveService(&server.service)
+			return nil, err
 		}
-		options.ManufacturerData = []bluetooth.ManufacturerDataElement{{
-			CompanyID: TestCompanyID,
-			Data:      append(append([]byte(nil), marker...), advertisedName...),
-		}}
-	} else {
-		options.LocalName = name
-		options.ServiceUUIDs = []bluetooth.UUID{ServiceUUID}
+		if err := advertisement.Start(); err != nil {
+			_ = adapter.RemoveService(&server.service)
+			return nil, err
+		}
+		server.advertisement = advertisement
 	}
-	if err := advertisement.Configure(options); err != nil {
-		_ = adapter.RemoveService(&server.service)
-		return nil, err
-	}
-	if err := advertisement.Start(); err != nil {
-		_ = adapter.RemoveService(&server.service)
-		return nil, err
-	}
-	server.advertisement = advertisement
 	go func() {
 		<-ctx.Done()
 		_ = server.Close()

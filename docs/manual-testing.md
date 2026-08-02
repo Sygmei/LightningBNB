@@ -35,7 +35,7 @@ With one or more streams actively exchanging numbered messages:
 ## Platform-specific checks
 
 - Linux: run without root under the documented D-Bus permissions, restart `bluetoothd`, and verify the client/server recover or report actionable errors.
-- Windows server: verify the adapter supports the peripheral role, the GATT service is discoverable, and the manufacturer marker supplies the configured name when the OS advertisement omits it.
+- Windows server: verify the adapter supports the peripheral role and the connectable GATT service is discoverable. The configured name may appear as `(unnamed)` because the WinRT service advertisement can omit it.
 - macOS client: test both Intel and Apple Silicon when available, grant and revoke terminal Bluetooth permission, and confirm server mode returns the documented unsupported error.
 
 Record observed throughput only as diagnostic information. It is not a compatibility gate beyond carrying interactive/modest-rate traffic without corruption.

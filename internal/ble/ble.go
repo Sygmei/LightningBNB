@@ -186,11 +186,25 @@ func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, 
 		_ = native.Disconnect()
 		return nil, fmt.Errorf("discover LightningBNB characteristics: %w", err)
 	}
-	if len(characteristics) != 2 {
+	var rx bluetooth.DeviceCharacteristic
+	var tx bluetooth.DeviceCharacteristic
+	haveRX := false
+	haveTX := false
+	for _, characteristic := range characteristics {
+		switch characteristic.UUID() {
+		case RXUUID:
+			rx = characteristic
+			haveRX = true
+		case TXUUID:
+			tx = characteristic
+			haveTX = true
+		}
+	}
+	if !haveRX || !haveTX {
 		_ = native.Disconnect()
 		return nil, errors.New("selected device does not expose the complete LightningBNB transport")
 	}
-	conn := newClientPacketConn(device.ID, native, characteristics[0], characteristics[1])
+	conn := newClientPacketConn(device.ID, native, rx, tx)
 	a.connectionsMu.Lock()
 	a.connections[device.ID] = conn
 	a.connectionsMu.Unlock()
