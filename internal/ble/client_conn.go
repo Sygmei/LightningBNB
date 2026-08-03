@@ -21,6 +21,8 @@ type clientPacketConn struct {
 	receive  chan []byte
 	done     chan struct{}
 	once     sync.Once
+	sendMu   sync.Mutex
+	withACK  bool
 	onClose  func()
 }
 
@@ -98,7 +100,24 @@ func (c *clientPacketConn) Send(ctx context.Context, packet []byte) error {
 		return io.ErrClosedPipe
 	default:
 	}
-	_, err := c.rx.Write(packet)
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	var err error
+	if c.withACK {
+		_, err = c.rx.Write(packet)
+	} else {
+		_, err = c.rx.WriteWithoutResponse(packet)
+		if err != nil {
+			// Older LightningBNB servers exposed only ATT writes with response.
+			// Preserve compatibility and keep using that mode for this binding.
+			if _, fallbackErr := c.rx.Write(packet); fallbackErr == nil {
+				c.withACK = true
+				err = nil
+			} else {
+				err = fallbackErr
+			}
+		}
+	}
 	if err != nil {
 		c.close(false)
 	}

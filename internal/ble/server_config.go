@@ -9,7 +9,7 @@ func transportService(rx, tx *bluetooth.Characteristic, onWrite bluetooth.WriteE
 			{
 				Handle:     rx,
 				UUID:       RXUUID,
-				Flags:      bluetooth.CharacteristicWritePermission,
+				Flags:      bluetooth.CharacteristicWritePermission | bluetooth.CharacteristicWriteWithoutResponsePermission,
 				WriteEvent: onWrite,
 			},
 			{

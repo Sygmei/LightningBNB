@@ -129,17 +129,17 @@ func TestBenchmarkResponderRunsInsideMuxSession(t *testing.T) {
 }
 
 func TestBenchmarkClientAndServerAllDirections(t *testing.T) {
-	serverCtx, cancelServer := context.WithCancel(context.Background())
-	clientWire, serverWire := net.Pipe()
-	clientMux := mux.NewClient(clientWire, 8)
-	serverMux := mux.NewServer(serverWire, 8)
-	defer clientMux.Close()
-	defer serverMux.Close()
-	serverErrors := make(chan error, 1)
-	go func() { serverErrors <- ServeBenchmarkStreams(serverCtx, serverMux, &traffic.Counter{}, nil) }()
-
 	for _, direction := range []string{"upload", "download", "both"} {
 		t.Run(direction, func(t *testing.T) {
+			serverCtx, cancelServer := context.WithCancel(context.Background())
+			clientWire, serverWire := net.Pipe()
+			clientMux := mux.NewClient(clientWire, 8)
+			serverMux := mux.NewServer(serverWire, 8)
+			defer clientMux.Close()
+			defer serverMux.Close()
+			serverErrors := make(chan error, 1)
+			go func() { serverErrors <- ServeBenchmarkStreams(serverCtx, serverMux, &traffic.Counter{}, nil) }()
+
 			var diagnostics bytes.Buffer
 			if err := RunMuxBenchmarkClient(context.Background(), BenchmarkClientConfig{
 				Direction:     direction,
@@ -161,12 +161,12 @@ func TestBenchmarkClientAndServerAllDirections(t *testing.T) {
 			if direction != "upload" && strings.Contains(output, "rx=0 B") {
 				t.Fatalf("download did not transfer data: %q", output)
 			}
-		})
-	}
 
-	cancelServer()
-	if err := <-serverErrors; err != nil {
-		t.Fatal(err)
+			cancelServer()
+			if err := <-serverErrors; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

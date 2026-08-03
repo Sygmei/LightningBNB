@@ -19,7 +19,7 @@ import (
 const (
 	benchmarkMagic             = "LBNBBEN1"
 	benchmarkBlockSize         = 1024
-	benchmarkOutstandingWindow = 4 * benchmarkBlockSize
+	benchmarkOutstandingWindow = 64 * benchmarkBlockSize
 	benchmarkReady             = byte(1)
 	benchmarkStart             = byte(1)
 )
@@ -434,5 +434,5 @@ func cleanBenchmarkServerError(err error) error {
 }
 
 func cleanBenchmarkSessionError(err error) bool {
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, mux.ErrSessionClosed)
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) || errors.Is(err, mux.ErrSessionClosed)
 }

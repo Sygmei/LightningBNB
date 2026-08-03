@@ -145,7 +145,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				}
 				continue
 			}
-			logger.Printf("connected to %s", deviceID)
+			logger.Printf("connected to %s; packet-mtu=%d", deviceID, linkSession.PacketMTU())
 			if cfg.Benchmark != nil && benchmarkDone == nil {
 				benchmarkCfg := *cfg.Benchmark
 				benchmarkCfg.ErrorOutput = cfg.ErrorOutput

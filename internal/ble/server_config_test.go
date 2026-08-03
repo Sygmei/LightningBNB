@@ -22,8 +22,9 @@ func TestTransportServiceRegistersBothCharacteristicHandles(t *testing.T) {
 	if rxConfig.UUID != RXUUID || rxConfig.Handle != &rx {
 		t.Fatal("RX characteristic is not registered with its handle")
 	}
-	if rxConfig.Flags != bluetooth.CharacteristicWritePermission || rxConfig.WriteEvent == nil {
-		t.Fatal("RX characteristic does not support handled writes with response")
+	writes := bluetooth.CharacteristicWritePermission | bluetooth.CharacteristicWriteWithoutResponsePermission
+	if rxConfig.Flags != writes || rxConfig.WriteEvent == nil {
+		t.Fatal("RX characteristic does not support handled writes with and without response")
 	}
 	txConfig := service.Characteristics[1]
 	if txConfig.UUID != TXUUID || txConfig.Handle != &tx {

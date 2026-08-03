@@ -23,6 +23,8 @@ const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatTimeout   = 15 * time.Second
 	sendTimeout        = 5 * time.Second
+	transmitWindow     = 64 << 10
+	fastRetransmitACKs = 3
 )
 
 var (
@@ -54,14 +56,15 @@ func (cfg Config) normalized() Config {
 }
 
 type binding struct {
-	conn    PacketConn
-	gen     uint64
-	mtu     int
-	cancel  context.CancelFunc
-	lastRX  time.Time
-	lastTX  time.Time
-	dataAt  time.Time
-	dataSeq uint64
+	conn         PacketConn
+	gen          uint64
+	mtu          int
+	cancel       context.CancelFunc
+	lastRX       time.Time
+	lastTX       time.Time
+	sendNext     uint64
+	retransmitAt time.Time
+	duplicateACK int
 }
 
 // Session is a reliable, ordered, resumable byte stream over replaceable BLE
@@ -233,12 +236,13 @@ func (s *Session) attach(conn PacketConn, mtu int) error {
 	old := s.current
 	s.bindGen++
 	b := &binding{
-		conn:   conn,
-		gen:    s.bindGen,
-		mtu:    min(normalizeMTU(conn.MTU()), normalizeMTU(mtu)),
-		cancel: cancel,
-		lastRX: now,
-		lastTX: now,
+		conn:     conn,
+		gen:      s.bindGen,
+		mtu:      min(normalizeMTU(conn.MTU()), normalizeMTU(mtu)),
+		cancel:   cancel,
+		lastRX:   now,
+		lastTX:   now,
+		sendNext: s.txBase,
 	}
 	s.current = b
 	s.detachedAt = time.Time{}
@@ -303,7 +307,7 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		if len(packet) != 9 {
 			return ErrHandshake
 		}
-		if err := s.handleAckLocked(binary.BigEndian.Uint64(packet[1:9])); err != nil {
+		if err := s.handleAckLocked(b, binary.BigEndian.Uint64(packet[1:9]), now); err != nil {
 			return err
 		}
 	case packetPing:
@@ -410,18 +414,35 @@ func (s *Session) nextPacketLocked(b *binding, now time.Time) []byte {
 		binary.BigEndian.PutUint64(packet[1:], s.rxNext)
 		return packet
 	}
-	if len(s.txBuf) > 0 && (b.dataSeq != s.txBase || now.Sub(b.dataAt) >= retransmitInterval) {
+	if b.sendNext < s.txBase || b.sendNext > s.txNext {
+		b.sendNext = s.txBase
+		b.retransmitAt = time.Time{}
+		b.duplicateACK = 0
+	}
+	if b.sendNext > s.txBase && !b.retransmitAt.IsZero() && !now.Before(b.retransmitAt) {
+		b.sendNext = s.txBase
+		b.retransmitAt = now.Add(retransmitInterval)
+		b.duplicateACK = 0
+	}
+	windowEnd := s.txNext
+	if windowEnd-s.txBase > transmitWindow {
+		windowEnd = s.txBase + transmitWindow
+	}
+	if b.sendNext < windowEnd {
 		payloadSize := b.mtu - 9
 		if payloadSize < 1 {
 			payloadSize = 1
 		}
-		payloadSize = min(payloadSize, len(s.txBuf))
+		payloadSize = min(payloadSize, int(windowEnd-b.sendNext))
 		packet := make([]byte, 9+payloadSize)
 		packet[0] = packetData
-		binary.BigEndian.PutUint64(packet[1:9], s.txBase)
-		copy(packet[9:], s.txBuf[:payloadSize])
-		b.dataSeq = s.txBase
-		b.dataAt = now
+		binary.BigEndian.PutUint64(packet[1:9], b.sendNext)
+		start := int(b.sendNext - s.txBase)
+		copy(packet[9:], s.txBuf[start:start+payloadSize])
+		if b.sendNext == s.txBase && b.retransmitAt.IsZero() {
+			b.retransmitAt = now.Add(retransmitInterval)
+		}
+		b.sendNext += uint64(payloadSize)
 		return packet
 	}
 	if now.Sub(b.lastTX) >= heartbeatInterval {
@@ -478,11 +499,36 @@ func (s *Session) reconcilePeerLocked(expected uint64) error {
 	return nil
 }
 
-func (s *Session) handleAckLocked(expected uint64) error {
+func (s *Session) handleAckLocked(b *binding, expected uint64, now time.Time) error {
 	if expected < s.txBase {
 		return nil
 	}
-	return s.reconcilePeerLocked(expected)
+	previousBase := s.txBase
+	if err := s.reconcilePeerLocked(expected); err != nil {
+		return err
+	}
+	if s.txBase > previousBase {
+		b.duplicateACK = 0
+		if b.sendNext < s.txBase {
+			b.sendNext = s.txBase
+		}
+		if b.sendNext > s.txBase {
+			b.retransmitAt = now.Add(retransmitInterval)
+		} else {
+			b.retransmitAt = time.Time{}
+		}
+		return nil
+	}
+	if expected == s.txBase && b.sendNext > s.txBase {
+		b.duplicateACK++
+		if b.duplicateACK >= fastRetransmitACKs {
+			b.sendNext = s.txBase
+			b.retransmitAt = now.Add(retransmitInterval)
+			b.duplicateACK = 0
+			s.signalLocked()
+		}
+	}
+	return nil
 }
 
 func (s *Session) negotiateLocked(peer Config) {
@@ -498,6 +544,17 @@ func (s *Session) IsBound() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.current != nil && !s.closed
+}
+
+// PacketMTU returns the effective packet size negotiated for the current BLE
+// binding. It returns zero while the session is disconnected.
+func (s *Session) PacketMTU() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current == nil || s.closed {
+		return 0
+	}
+	return s.current.mtu
 }
 
 func (s *Session) WaitBound(ctx context.Context) error {

@@ -1,7 +1,9 @@
 package link
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"sync"
@@ -156,6 +158,88 @@ func TestSessionTransfersAndRetransmits(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSessionPipelinesPacketsBeforeAcknowledgement(t *testing.T) {
+	session, err := NewSession(Config{ReplayWindow: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	session.mu.Lock()
+	session.txBuf = make([]byte, 100)
+	session.txNext = uint64(len(session.txBuf))
+	b := &binding{mtu: 20, lastTX: time.Now(), sendNext: session.txBase}
+	first := session.nextPacketLocked(b, time.Now())
+	second := session.nextPacketLocked(b, time.Now())
+	third := session.nextPacketLocked(b, time.Now())
+	session.mu.Unlock()
+
+	for i, packet := range [][]byte{first, second, third} {
+		if len(packet) != 20 || packet[0] != packetData {
+			t.Fatalf("packet %d = %x, want a 20-byte data packet", i, packet)
+		}
+		if got, want := binary.BigEndian.Uint64(packet[1:9]), uint64(i*11); got != want {
+			t.Fatalf("packet %d sequence = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestSessionBoundsUnacknowledgedTransmissionWindow(t *testing.T) {
+	session, err := NewSession(Config{ReplayWindow: 2 * transmitWindow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	session.mu.Lock()
+	session.txBuf = make([]byte, 2*transmitWindow)
+	session.txNext = uint64(len(session.txBuf))
+	b := &binding{mtu: 244, lastTX: time.Now(), sendNext: session.txBase}
+	now := time.Now()
+	sent := 0
+	for {
+		packet := session.nextPacketLocked(b, now)
+		if packet == nil {
+			break
+		}
+		if packet[0] != packetData {
+			t.Fatalf("unexpected packet type %d", packet[0])
+		}
+		sent += len(packet) - 9
+	}
+	session.mu.Unlock()
+
+	if sent != transmitWindow {
+		t.Fatalf("sent %d unacknowledged bytes, want %d", sent, transmitWindow)
+	}
+}
+
+func TestSessionSlidingWindowRecoversMissingPacket(t *testing.T) {
+	cfg := Config{ResumeTimeout: 3 * time.Second, ReplayWindow: 128 << 10, MaxConnections: 2}
+	client, server, clientConn, _ := newSessionPair(t, cfg)
+	defer client.Close()
+	defer server.Close()
+
+	clientConn.dropNext(packetData)
+	want := make([]byte, 4096)
+	for i := range want {
+		want[i] = byte(i)
+	}
+	if _, err := client.Write(want); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("recovered payload differs from sent payload")
 	}
 }
 

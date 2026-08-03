@@ -7,10 +7,12 @@ All multi-byte integers use network byte order (big endian). Receivers reject ma
 | Purpose | UUID | Properties |
 | --- | --- | --- |
 | Service | `13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0` | Primary service |
-| RX (client → server) | `13f0b6a1-4746-4c42-8e2f-1f62e4a0b1a0` | Write with response |
+| RX (client → server) | `13f0b6a1-4746-4c42-8e2f-1f62e4a0b1a0` | Write without response; write with response is also exposed for compatibility |
 | TX (server → client) | `13f0b6a2-4746-4c42-8e2f-1f62e4a0b1a0` | Notify |
 
 Linux advertises the service UUID and local name. Windows advertises the connectable GATT service directly through WinRT. Windows may omit the configured local name, in which case scanners display `(unnamed)` and the platform-specific device identifier remains the selection key. LightningBNB deliberately does not publish a second manufacturer-data advertisement because WinRT's generic advertisement publisher is not the connectable GATT service.
+
+The reliable link protocol supplies offsets, cumulative acknowledgements, replay, and retransmission above GATT. Clients therefore use ATT write commands on RX to keep multiple packets moving instead of waiting for an ATT response after every packet.
 
 The negotiated packet size is the smaller peer limit, capped at 244 bytes. Bootstrap packets are no larger than the 20-byte minimum ATT value size. Empty and oversized packets are invalid where a payload is required.
 
@@ -39,7 +41,7 @@ The effective timeout and stream limit are the smaller values offered by the pee
 | `PONG` | `0x07` | none |
 | `CLOSE` | `0x08` | none |
 
-Each direction is independent. A receiver accepts `DATA` only at its next expected offset, drops duplicate/out-of-order data, and returns a cumulative `ACK`. The sender retains unacknowledged bytes in a 1 MiB replay window and retransmits the oldest outstanding fragment after one second. When either replay or receive storage is full, higher layers block and propagate TCP backpressure.
+Each direction is independent. A receiver accepts `DATA` only at its next expected offset, drops duplicate/out-of-order data, and returns a cumulative `ACK`. The sender pipelines up to 64 KiB of unacknowledged data, retains it in a 1 MiB replay window, and restarts from the oldest outstanding fragment after one second or three duplicate acknowledgements. When either replay or receive storage is full, higher layers block and propagate TCP backpressure.
 
 An idle peer emits `PING` after five seconds. Fifteen seconds without a received packet marks the physical link detached; the resume deadline is measured from the last received packet. BLE connection callbacks and read/write errors may detect detachment sooner.
 
@@ -88,4 +90,4 @@ The diagnostic `benchmark` client and a server running with `--benchmark` commun
 5. Unframed payload in 1 KiB blocks in the selected direction.
 6. Eight-byte big-endian cumulative acknowledgements in the reverse direction.
 
-Each sender limits unacknowledged benchmark payload to 4 KiB. TX counters advance only when cumulative acknowledgements arrive, while RX counters advance as payload is delivered. Benchmark payload is generated and discarded in memory; counters exclude handshake and acknowledgement bytes.
+Each sender limits unacknowledged benchmark payload to 64 KiB. TX counters advance only when cumulative acknowledgements arrive, while RX counters advance as payload is delivered. Benchmark payload is generated and discarded in memory; counters exclude handshake and acknowledgement bytes.

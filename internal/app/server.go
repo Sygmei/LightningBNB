@@ -131,6 +131,10 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 			continue
 		}
 		cancel()
-		logger.Printf("BLE client connected; session has %d-stream limit", currentLink.Config().MaxConnections)
+		logger.Printf(
+			"BLE client connected; packet-mtu=%d session has %d-stream limit",
+			currentLink.PacketMTU(),
+			currentLink.Config().MaxConnections,
+		)
 	}
 }
