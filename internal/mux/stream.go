@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -24,11 +25,12 @@ type Stream struct {
 	remoteWriteClosed bool
 	closeAfterDrain   bool
 
-	sendWindow    uint32
-	receiveWindow uint32
-	inbound       []byte
-	outbound      []protocol.Frame
-	scheduled     bool
+	sendWindow          uint32
+	receiveWindow       uint32
+	pendingWindowUpdate uint32
+	inbound             []byte
+	outbound            []protocol.Frame
+	scheduled           bool
 
 	readDeadline  time.Time
 	writeDeadline time.Time
@@ -127,8 +129,16 @@ func (s *Stream) Read(p []byte) (int, error) {
 			n := copy(p, s.inbound)
 			s.inbound = s.inbound[n:]
 			s.receiveWindow += uint32(n)
+			s.pendingWindowUpdate += uint32(n)
+			windowUpdate := uint32(0)
+			if s.pendingWindowUpdate >= windowUpdateThreshold {
+				windowUpdate = s.pendingWindowUpdate
+				s.pendingWindowUpdate = 0
+			}
 			s.mu.Unlock()
-			_ = s.session.sendControl(protocol.WindowUpdate(s.id, uint32(n)))
+			if windowUpdate > 0 {
+				_ = s.session.sendControl(protocol.WindowUpdate(s.id, windowUpdate))
+			}
 			return n, nil
 		}
 		if s.remoteWriteClosed {
@@ -170,8 +180,20 @@ func (s *Stream) Write(p []byte) (int, error) {
 			return written, err
 		}
 		if s.sendWindow > 0 {
-			n := min(len(p), protocol.MaxDataPayload, int(s.sendWindow))
+			maxPayload := protocol.MaxDataPayload
+			if s.session.compression {
+				maxPayload--
+			}
+			n := min(len(p), maxPayload, int(s.sendWindow))
 			payload := append([]byte(nil), p[:n]...)
+			if s.session.compression {
+				var err error
+				payload, err = encodeCompressedPayload(payload)
+				if err != nil {
+					s.mu.Unlock()
+					return written, err
+				}
+			}
 			s.sendWindow -= uint32(n)
 			needsSchedule := s.enqueueLocked(protocol.Frame{Type: protocol.FrameData, StreamID: s.id, Payload: payload})
 			s.mu.Unlock()
@@ -195,6 +217,13 @@ func (s *Stream) Write(p []byte) (int, error) {
 }
 
 func (s *Stream) receiveData(data []byte) error {
+	if s.session.compression {
+		decoded, err := decodeCompressedPayload(data)
+		if err != nil {
+			return fmt.Errorf("%w: compressed DATA: %v", ErrProtocol, err)
+		}
+		data = decoded
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.remoteWriteClosed || !s.opened {

@@ -23,13 +23,15 @@ The client creates a random 128-bit session ID with `crypto/rand`. State exists 
 | Type | Value | Body |
 | --- | --- | --- |
 | `HELLO_ID` | `0x01` | protocol version `u8`, session ID `[16]byte` |
-| `HELLO` | `0x02` | next server byte expected `u64`, resume timeout milliseconds `u32`, maximum streams `u16`, packet MTU `u16` |
-| `HELLO_ACK` | `0x03` | protocol version `u8`, next client byte expected `u64`, effective timeout milliseconds `u32`, effective maximum streams `u16`, effective packet MTU `u16` |
+| `HELLO` | `0x02` | next server byte expected `u64`, resume timeout milliseconds `u32`, maximum streams `u16`, packet MTU `u16`, optional capabilities `u8` |
+| `HELLO_ACK` | `0x03` | protocol version `u8`, next client byte expected `u64`, effective timeout milliseconds `u32`, effective maximum streams `u16`, effective packet MTU `u16`, optional capabilities `u8` |
 | `REJECT` | `0x09` | short UTF-8 diagnostic |
 
 A fresh session starts both byte offsets at zero. A resumable server accepts only the same session ID. `HELLO` and `HELLO_ACK` exchange the next byte each receiver needs, and a sender may advance only within its retained replay interval. A request outside that interval fails rather than silently losing or duplicating bytes.
 
 The effective timeout and stream limit are the smaller values offered by the peers. A server rejects a different session ID as busy until the current session closes or its recovery deadline expires.
+
+The optional capability byte is omitted when zero, preserving the original bootstrap lengths. Bit `0x01` selects per-frame DEFLATE compression. A client includes it only with `--compression`; a server echoes it only when compression was enabled and otherwise rejects the request. Resumption requires the same compression setting as the original session.
 
 ## Reliable byte stream
 
@@ -41,7 +43,7 @@ The effective timeout and stream limit are the smaller values offered by the pee
 | `PONG` | `0x07` | none |
 | `CLOSE` | `0x08` | none |
 
-Each direction is independent. A receiver accepts `DATA` only at its next expected offset, drops duplicate/out-of-order data, and returns a cumulative `ACK`. The sender pipelines up to 64 KiB of unacknowledged data, retains it in a 1 MiB replay window, and restarts from the oldest outstanding fragment after one second or three duplicate acknowledgements. When either replay or receive storage is full, higher layers block and propagate TCP backpressure.
+Each direction is independent. A receiver accepts `DATA` only at its next expected offset, drops duplicate/out-of-order data, and returns a cumulative `ACK`. Under continuous traffic, ACKs are coalesced after up to eight packets or 40 milliseconds; gaps, duplicates, and receive pressure trigger an immediate ACK. The sender retains unacknowledged data in a 1 MiB replay window and restarts from the oldest outstanding fragment after one second or three duplicate acknowledgements. While connected, new writes are limited to a 16 KiB live window so multiplexing control frames cannot sit behind a long bulk-data train. Offline buffering can still use the full replay window.
 
 An idle peer emits `PING` after five seconds. Fifteen seconds without a received packet marks the physical link detached; the resume deadline is measured from the last received packet. BLE connection callbacks and read/write errors may detect detachment sooner.
 
@@ -71,6 +73,8 @@ Client-created stream IDs are non-zero odd integers. Payloads are limited to 16 
 
 Each stream starts with a 64 KiB receive window. `DATA` consumes window space, and application reads return it through `WINDOW_UPDATE`. The sender splits writes into at most 16 KiB frames and schedules at most one frame per ready stream before rotating to another ready stream.
 
+With compression negotiated, each `DATA` payload starts with an encoding byte: `0` carries raw bytes and `1` carries a DEFLATE stream. Uncompressed frame chunks are limited to 16383 bytes so the marker still fits the 16 KiB frame bound. Senders keep data raw unless compression makes the frame smaller. Receivers bound decompression to 16383 bytes and apply stream windows to the uncompressed size. `WINDOW_UPDATE` frames are accumulated in 8 KiB increments.
+
 `FIN` closes only the sender's write direction and maps to TCP `CloseWrite`, allowing reverse traffic to continue. `RESET` terminates both directions after an error. Session failure resets every remaining stream.
 
 ## Compatibility and security
@@ -87,7 +91,7 @@ The diagnostic `benchmark` client and a server running with `--benchmark` commun
 2. One direction byte: `1` for upload or `2` for download, relative to the benchmark client. Bidirectional tests open separate upload and download streams.
 3. One readiness byte with value `1`, returned by the benchmark server after it accepts the header.
 4. One start byte with value `1`, sent after every parallel stream returns readiness.
-5. Unframed payload in 1 KiB blocks in the selected direction.
+5. Unframed payload in 16 KiB blocks in the selected direction.
 6. Eight-byte big-endian cumulative acknowledgements in the reverse direction.
 
-Each sender limits unacknowledged benchmark payload to 64 KiB. TX counters advance only when cumulative acknowledgements arrive, while RX counters advance as payload is delivered. Benchmark payload is generated and discarded in memory; counters exclude handshake and acknowledgement bytes.
+Each sender limits unacknowledged benchmark payload to 256 KiB. TX counters advance only when cumulative acknowledgements arrive, while RX counters advance as payload is delivered. Acknowledgements cover 16 KiB blocks. Benchmark payload is deterministic high-entropy data so compression does not distort the physical transport measurement; counters exclude handshake and acknowledgement bytes.

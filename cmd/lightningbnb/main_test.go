@@ -69,6 +69,20 @@ func TestBenchmarkServerRejectsTargetPort(t *testing.T) {
 	}
 }
 
+func TestCompressionFlagIsAvailableOnTransportCommands(t *testing.T) {
+	for _, command := range []string{"client", "server", "benchmark"} {
+		t.Run(command, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := run(context.Background(), []string{command, "--help"}, strings.NewReader(""), &output, &output, false); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), "-compression") {
+				t.Fatalf("%s help does not list --compression: %q", command, output.String())
+			}
+		})
+	}
+}
+
 func TestVersion(t *testing.T) {
 	var output bytes.Buffer
 	if err := run(context.Background(), []string{"version"}, strings.NewReader(""), &output, &output, false); err != nil {

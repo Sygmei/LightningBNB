@@ -18,8 +18,8 @@ import (
 
 const (
 	benchmarkMagic             = "LBNBBEN1"
-	benchmarkBlockSize         = 1024
-	benchmarkOutstandingWindow = 64 * benchmarkBlockSize
+	benchmarkBlockSize         = 16 * 1024
+	benchmarkOutstandingWindow = 256 * 1024
 	benchmarkReady             = byte(1)
 	benchmarkStart             = byte(1)
 )
@@ -255,9 +255,7 @@ type benchmarkACK struct {
 // from being reported as Bluetooth throughput.
 func pumpBenchmarkSend(conn benchmarkConnection, addConfirmed func(uint64)) error {
 	payload := make([]byte, benchmarkBlockSize)
-	for i := range payload {
-		payload[i] = byte(i)
-	}
+	fillBenchmarkPayload(payload)
 	acks := make(chan benchmarkACK, benchmarkOutstandingWindow/benchmarkBlockSize+2)
 	go func() {
 		var encoded [8]byte
@@ -296,7 +294,7 @@ func pumpBenchmarkSend(conn benchmarkConnection, addConfirmed func(uint64)) erro
 }
 
 // pumpBenchmarkReceive counts delivered bytes and returns cumulative
-// acknowledgements after each 1 KiB of progress.
+// acknowledgements after each 16 KiB of progress.
 func pumpBenchmarkReceive(conn benchmarkConnection, addReceived func(uint64)) error {
 	buffer := make([]byte, benchmarkBlockSize)
 	var total uint64
@@ -318,6 +316,19 @@ func pumpBenchmarkReceive(conn benchmarkConnection, addReceived func(uint64)) er
 		if err != nil {
 			return err
 		}
+	}
+}
+
+// fillBenchmarkPayload uses deterministic high-entropy data so enabling bridge
+// compression does not make the physical transport benchmark look faster just
+// because the generator produced an easily compressed repeating pattern.
+func fillBenchmarkPayload(payload []byte) {
+	state := uint64(0x9e3779b97f4a7c15)
+	for i := range payload {
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		payload[i] = byte(state)
 	}
 }
 

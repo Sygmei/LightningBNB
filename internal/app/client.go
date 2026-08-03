@@ -27,6 +27,7 @@ type ClientConfig struct {
 	ResumeTimeout      time.Duration
 	MaxConnections     int
 	StatsInterval      time.Duration
+	Compression        bool
 	Benchmark          *BenchmarkClientConfig
 	SuppressListenAddr bool
 	Interactive        bool
@@ -86,11 +87,12 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 			ResumeTimeout:  cfg.ResumeTimeout,
 			ReplayWindow:   link.DefaultReplayWindow,
 			MaxConnections: cfg.MaxConnections,
+			Compression:    cfg.Compression,
 		})
 		if err != nil {
 			return err
 		}
-		muxSession := mux.NewClient(linkSession, cfg.MaxConnections)
+		muxSession := mux.NewClientWithCompression(linkSession, cfg.MaxConnections, cfg.Compression)
 		clientBridge.SetEndpoint(&bridge.Endpoint{Link: linkSession, Mux: muxSession})
 		logger.Printf("starting BLE session for server %s", deviceID)
 
@@ -145,7 +147,12 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				}
 				continue
 			}
-			logger.Printf("connected to %s; packet-mtu=%d", deviceID, linkSession.PacketMTU())
+			logger.Printf(
+				"connected to %s; packet-mtu=%d compression=%t",
+				deviceID,
+				linkSession.PacketMTU(),
+				linkSession.Config().Compression,
+			)
 			if cfg.Benchmark != nil && benchmarkDone == nil {
 				benchmarkCfg := *cfg.Benchmark
 				benchmarkCfg.ErrorOutput = cfg.ErrorOutput

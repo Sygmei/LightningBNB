@@ -52,6 +52,15 @@ Pair the two computers with the operating-system Bluetooth tools first, then sta
 ./lightningbnb client --device DEVICE_ID
 ```
 
+For compressible traffic such as HTTP, JSON, and LLM token streams, allow compression on the server and request it on the client:
+
+```sh
+./lightningbnb server --target-port 8080 --compression
+./lightningbnb client --device DEVICE_ID --compression
+```
+
+An uncompressed client can still use a server started with `--compression`. A client requesting compression is rejected explicitly when the server did not enable it.
+
 The client prints its selected endpoint on stdout:
 
 ```text
@@ -70,6 +79,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --resume-timeout    BLE recovery window (default 60s)
 --max-connections   active plus waiting TCP connection limit (default 32)
 --stats-interval    live traffic stats interval; 0 disables stats (default 1s)
+--compression       compress TCP payloads; the server must allow compression
 ```
 
 ### Server flags
@@ -83,6 +93,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --max-connections   multiplexed TCP connection limit (default 32)
 --stats-interval    live traffic stats interval; 0 disables stats (default 1s)
 --benchmark         handle in-memory throughput streams instead of a TCP target
+--compression       allow clients to negotiate compressed TCP payloads
 ```
 
 Client and server print process-relative live traffic totals and rates to stderr. `tx` is forwarded TCP payload sent across Bluetooth and `rx` is payload received from Bluetooth; protocol overhead is excluded. For example:
@@ -107,9 +118,16 @@ Then run the benchmark subcommand on the client computer:
 ./lightningbnb benchmark --device DEVICE_ID --duration 30s
 ```
 
+To exercise the compression code path, add `--compression` to both commands. Benchmark data is deliberately high entropy, so compression cannot inflate the reported physical transport rate:
+
+```sh
+./lightningbnb server --benchmark --compression
+./lightningbnb benchmark --device DEVICE_ID --duration 30s --compression
+```
+
 The benchmark uses one stream per direction by default. `--direction upload`, `--direction download`, and `--direction both` measure traffic relative to the benchmark client. `--connections N` sets the number of streams per direction (up to 32 for one-way tests or 16 in each direction for bidirectional tests), and `--stats-interval` changes the live reporting interval. BLE session resumption remains active during the run.
 
-Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 4 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements without counting them as payload.
+Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 256 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements every 16 KiB without counting them as payload.
 
 The client prints one-second live rates followed by a final whole-run average, for example:
 

@@ -24,19 +24,25 @@ const (
 	heartbeatTimeout   = 15 * time.Second
 	sendTimeout        = 5 * time.Second
 	transmitWindow     = 64 << 10
+	liveWriteWindow    = 16 << 10
 	fastRetransmitACKs = 3
+	ackBatchPackets    = 8
+	ackMaxDelay        = 40 * time.Millisecond
+	sendLoopInterval   = 10 * time.Millisecond
 )
 
 var (
 	ErrResumeTimeout     = errors.New("BLE resume timeout expired")
 	ErrNotConnected      = errors.New("BLE session is not connected")
 	ErrSequenceExhausted = errors.New("BLE session byte sequence exhausted")
+	ErrCompression       = errors.New("BLE peer does not support requested compression")
 )
 
 type Config struct {
 	ResumeTimeout  time.Duration
 	ReplayWindow   int
 	MaxConnections int
+	Compression    bool
 }
 
 func (cfg Config) normalized() Config {
@@ -86,6 +92,8 @@ type Session struct {
 	detachedAt time.Time
 
 	ackDirty         bool
+	ackPackets       int
+	ackDeadline      time.Time
 	pongDirty        bool
 	helloReply       []byte
 	pendingHelloID   SessionID
@@ -187,6 +195,12 @@ func (s *Session) BindClient(ctx context.Context, conn PacketConn) error {
 			break
 		}
 	}
+	if cfg.Compression && !peerCfg.Compression {
+		return ErrCompression
+	}
+	if !cfg.Compression && peerCfg.Compression {
+		return ErrHandshake
+	}
 
 	s.mu.Lock()
 	if err := s.reconcilePeerLocked(peerExpected); err != nil {
@@ -203,6 +217,9 @@ func (s *Session) BindServer(ctx context.Context, conn PacketConn, hello Hello) 
 	if !s.Matches(hello.ID) {
 		return ErrRejected
 	}
+	if hello.Compression != s.Config().Compression {
+		return ErrCompression
+	}
 	s.mu.Lock()
 	if s.closed {
 		err := s.sessionErrorLocked()
@@ -213,7 +230,11 @@ func (s *Session) BindServer(ctx context.Context, conn PacketConn, hello Hello) 
 		s.mu.Unlock()
 		return err
 	}
-	peerCfg := Config{ResumeTimeout: hello.ResumeTimeout, MaxConnections: hello.MaxConnections}
+	peerCfg := Config{
+		ResumeTimeout:  hello.ResumeTimeout,
+		MaxConnections: hello.MaxConnections,
+		Compression:    hello.Compression,
+	}
 	mtu := min(normalizeMTU(conn.MTU()), normalizeMTU(hello.AdvertisedPacketMTU))
 	s.negotiateLocked(peerCfg)
 	ack := encodeHelloAck(s.rxNext, s.config, mtu)
@@ -246,6 +267,9 @@ func (s *Session) attach(conn PacketConn, mtu int) error {
 	}
 	s.current = b
 	s.detachedAt = time.Time{}
+	if s.ackDirty {
+		s.ackDeadline = now
+	}
 	s.signalLocked()
 	s.mu.Unlock()
 	if old != nil {
@@ -293,7 +317,8 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		}
 		seq := binary.BigEndian.Uint64(packet[1:9])
 		payload := packet[9:]
-		if seq == s.rxNext && len(s.rxBuf)+len(payload) <= s.config.ReplayWindow {
+		accepted := seq == s.rxNext && len(s.rxBuf)+len(payload) <= s.config.ReplayWindow
+		if accepted {
 			if uint64(len(payload)) > ^uint64(0)-s.rxNext {
 				return ErrSequenceExhausted
 			}
@@ -302,6 +327,17 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 			s.signalLocked()
 		}
 		s.ackDirty = true
+		if accepted {
+			s.ackPackets++
+			if s.ackDeadline.IsZero() {
+				s.ackDeadline = now.Add(ackMaxDelay)
+			}
+		} else {
+			// Duplicates, gaps, and receive-window pressure need an immediate
+			// cumulative ACK so the sender can restart at the expected offset.
+			s.ackPackets = ackBatchPackets
+			s.ackDeadline = now
+		}
 		s.signalLocked()
 	case packetAck:
 		if len(packet) != 9 {
@@ -328,8 +364,12 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 			s.havePendingHello = true
 		}
 	case packetHello:
-		if len(packet) != 17 || !s.havePendingHello || s.pendingHelloID != s.id {
+		if (len(packet) != 17 && len(packet) != 18) || !s.havePendingHello || s.pendingHelloID != s.id {
 			return nil
+		}
+		peerCompression := len(packet) == 18 && packet[17]&capabilityCompression != 0
+		if (len(packet) == 18 && packet[17]&^knownCapabilities != 0) || peerCompression != s.config.Compression {
+			return ErrCompression
 		}
 		peerExpected := binary.BigEndian.Uint64(packet[1:9])
 		if err := s.reconcilePeerLocked(peerExpected); err != nil {
@@ -338,6 +378,7 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		peerCfg := Config{
 			ResumeTimeout:  time.Duration(binary.BigEndian.Uint32(packet[9:13])) * time.Millisecond,
 			MaxConnections: int(binary.BigEndian.Uint16(packet[13:15])),
+			Compression:    peerCompression,
 		}
 		mtu := min(b.mtu, normalizeMTU(int(binary.BigEndian.Uint16(packet[15:17]))))
 		s.negotiateLocked(peerCfg)
@@ -354,7 +395,7 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 }
 
 func (s *Session) sendLoop(ctx context.Context, b *binding) {
-	ticker := time.NewTicker(250 * time.Millisecond)
+	ticker := time.NewTicker(sendLoopInterval)
 	defer ticker.Stop()
 	for {
 		s.mu.Lock()
@@ -407,8 +448,10 @@ func (s *Session) nextPacketLocked(b *binding, now time.Time) []byte {
 		s.pongDirty = false
 		return []byte{packetPong}
 	}
-	if s.ackDirty {
+	if s.ackDirty && (s.ackPackets >= ackBatchPackets || s.ackDeadline.IsZero() || !now.Before(s.ackDeadline)) {
 		s.ackDirty = false
+		s.ackPackets = 0
+		s.ackDeadline = time.Time{}
 		packet := make([]byte, 9)
 		packet[0] = packetAck
 		binary.BigEndian.PutUint64(packet[1:], s.rxNext)
@@ -538,6 +581,7 @@ func (s *Session) negotiateLocked(peer Config) {
 	if peer.MaxConnections > 0 && peer.MaxConnections < s.config.MaxConnections {
 		s.config.MaxConnections = peer.MaxConnections
 	}
+	s.config.Compression = s.config.Compression && peer.Compression
 }
 
 func (s *Session) IsBound() bool {
@@ -616,6 +660,9 @@ func (s *Session) Write(p []byte) (int, error) {
 			return written, err
 		}
 		space := s.config.ReplayWindow - len(s.txBuf)
+		if s.current != nil {
+			space = min(space, liveWriteWindow-len(s.txBuf))
+		}
 		if space > 0 {
 			n := min(space, len(p))
 			if uint64(n) > ^uint64(0)-s.txNext {

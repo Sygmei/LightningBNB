@@ -1,6 +1,7 @@
 package mux
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Sygmei/LightningBNB/internal/protocol"
 )
 
 func TestMultiplexedStreamsAreIsolated(t *testing.T) {
@@ -159,5 +162,106 @@ func TestStreamLimit(t *testing.T) {
 	defer first.Close()
 	if _, err := client.Open(ctx); !errors.Is(err, ErrTooManyStreams) {
 		t.Fatalf("second Open error = %v", err)
+	}
+}
+
+func TestCompressedMultiplexedStream(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	client := NewClientWithCompression(clientConn, 1, true)
+	server := NewServerWithCompression(serverConn, 1, true)
+	defer client.Close()
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	payload := bytes.Repeat([]byte("data: {\"token\":\"LightningBNB compression\"}\n\n"), 4096)
+	serverErr := make(chan error, 1)
+	go func() {
+		stream, err := server.Accept(ctx)
+		if err == nil {
+			err = stream.Approve()
+		}
+		if err == nil {
+			_, err = io.Copy(stream, stream)
+		}
+		serverErr <- err
+	}()
+
+	stream, err := client.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		_, writeErr := stream.Write(payload)
+		writeDone <- writeErr
+	}()
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(stream, got); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("compressed round trip changed payload")
+	}
+	_ = stream.Close()
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) && err.Error() != "stream closed" {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("compressed echo handler did not stop")
+	}
+}
+
+func TestCompressedPayloadRejectsMalformedInput(t *testing.T) {
+	if _, err := decodeCompressedPayload([]byte{compressionDeflate, 0xff}); err == nil {
+		t.Fatal("malformed compressed payload was accepted")
+	}
+	encoded, err := encodeCompressedPayload(bytes.Repeat([]byte("repeat"), 1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded[0] != compressionDeflate {
+		t.Fatal("compressible payload was stored raw")
+	}
+	decoded, err := decodeCompressedPayload(encoded)
+	if err != nil || !bytes.Equal(decoded, bytes.Repeat([]byte("repeat"), 1000)) {
+		t.Fatalf("decoded payload differs: %v", err)
+	}
+}
+
+func TestStreamBatchesWindowUpdates(t *testing.T) {
+	session := &Session{
+		control: make(chan protocol.Frame, 1),
+		done:    make(chan struct{}),
+	}
+	stream := newStream(session, 1)
+	stream.opened = true
+	stream.inbound = make([]byte, windowUpdateThreshold)
+	stream.receiveWindow -= windowUpdateThreshold
+
+	buffer := make([]byte, windowUpdateThreshold/2)
+	if _, err := stream.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-session.control:
+		t.Fatalf("early window update = %+v", frame)
+	default:
+	}
+	if _, err := stream.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-session.control:
+		if got := protocol.WindowAmount(frame); got != windowUpdateThreshold {
+			t.Fatalf("window update = %d", got)
+		}
+	default:
+		t.Fatal("batched window update was not emitted")
 	}
 }

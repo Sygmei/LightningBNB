@@ -24,9 +24,10 @@ var (
 )
 
 type Session struct {
-	conn       net.Conn
-	client     bool
-	maxStreams int
+	conn        net.Conn
+	client      bool
+	maxStreams  int
+	compression bool
 
 	mu      sync.Mutex
 	streams map[uint32]*Stream
@@ -42,14 +43,22 @@ type Session struct {
 }
 
 func NewClient(conn net.Conn, maxStreams int) *Session {
-	return newSession(conn, true, maxStreams)
+	return newSession(conn, true, maxStreams, false)
 }
 
 func NewServer(conn net.Conn, maxStreams int) *Session {
-	return newSession(conn, false, maxStreams)
+	return newSession(conn, false, maxStreams, false)
 }
 
-func newSession(conn net.Conn, client bool, maxStreams int) *Session {
+func NewClientWithCompression(conn net.Conn, maxStreams int, compression bool) *Session {
+	return newSession(conn, true, maxStreams, compression)
+}
+
+func NewServerWithCompression(conn net.Conn, maxStreams int, compression bool) *Session {
+	return newSession(conn, false, maxStreams, compression)
+}
+
+func newSession(conn net.Conn, client bool, maxStreams int, compression bool) *Session {
 	if maxStreams <= 0 {
 		maxStreams = 1
 	}
@@ -58,15 +67,16 @@ func newSession(conn net.Conn, client bool, maxStreams int) *Session {
 		nextID = 1
 	}
 	s := &Session{
-		conn:       conn,
-		client:     client,
-		maxStreams: maxStreams,
-		streams:    make(map[uint32]*Stream),
-		nextID:     nextID,
-		control:    make(chan protocol.Frame, maxStreams*8),
-		ready:      make(chan uint32, maxStreams),
-		accept:     make(chan *Stream, maxStreams*acceptBacklogFactor),
-		done:       make(chan struct{}),
+		conn:        conn,
+		client:      client,
+		maxStreams:  maxStreams,
+		compression: compression,
+		streams:     make(map[uint32]*Stream),
+		nextID:      nextID,
+		control:     make(chan protocol.Frame, maxStreams*8),
+		ready:       make(chan uint32, maxStreams),
+		accept:      make(chan *Stream, maxStreams*acceptBacklogFactor),
+		done:        make(chan struct{}),
 	}
 	go s.readLoop()
 	go s.writeLoop()

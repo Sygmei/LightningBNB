@@ -34,7 +34,9 @@ With one or more streams actively exchanging numbered messages:
 
 ## Throughput benchmark
 
-Run `lightningbnb server --benchmark` on the BLE server computer and `lightningbnb benchmark --device ID` on the client computer. Exercise upload, download, and both directions with one and four streams per direction. Confirm both processes report matching receiver-confirmed totals in the expected directions without an initial buffer-sized spike, and record the adapter models, MTU, direction, and stream count with the observed result.
+Run `lightningbnb server --benchmark` on the BLE server computer and `lightningbnb benchmark --device ID` on the client computer. Exercise upload, download, and both directions with one and four streams per direction. Repeat with `--compression` on both processes. Confirm both processes report matching receiver-confirmed totals in the expected directions without an initial buffer-sized spike, and record the adapter models, MTU, direction, compression setting, and stream count with the observed result.
+
+For a normal forwarding target, verify a compressed client transfers repetitive text and incompressible binary data exactly. Confirm a compressed client receives an explicit rejection from a server started without `--compression`, and an uncompressed client still works against a server that allows compression.
 
 ## Platform-specific checks
 

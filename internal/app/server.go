@@ -25,6 +25,7 @@ type ServerConfig struct {
 	MaxConnections int
 	StatsInterval  time.Duration
 	Benchmark      bool
+	Compression    bool
 	ErrorOutput    io.Writer
 }
 
@@ -93,6 +94,13 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 			logger.Printf("rejected another BLE client while a session is resumable")
 			continue
 		}
+		if hello.Compression && !cfg.Compression {
+			_ = link.SendReject(handshakeCtx, packetConn, "compression off")
+			cancel()
+			_ = packetConn.Close()
+			logger.Printf("rejected BLE client requesting disabled compression")
+			continue
+		}
 		createdSession := false
 		if currentLink == nil {
 			createdSession = true
@@ -100,8 +108,9 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 				ResumeTimeout:  cfg.ResumeTimeout,
 				ReplayWindow:   link.DefaultReplayWindow,
 				MaxConnections: cfg.MaxConnections,
+				Compression:    hello.Compression,
 			})
-			currentMux = mux.NewServer(currentLink, cfg.MaxConnections)
+			currentMux = mux.NewServerWithCompression(currentLink, cfg.MaxConnections, hello.Compression)
 			muxForBridge := currentMux
 			if cfg.Benchmark {
 				go func() {
@@ -132,8 +141,9 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 		}
 		cancel()
 		logger.Printf(
-			"BLE client connected; packet-mtu=%d session has %d-stream limit",
+			"BLE client connected; packet-mtu=%d compression=%t session has %d-stream limit",
 			currentLink.PacketMTU(),
+			currentLink.Config().Compression,
 			currentLink.Config().MaxConnections,
 		)
 	}
