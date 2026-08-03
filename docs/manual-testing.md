@@ -32,6 +32,10 @@ With one or more streams actively exchanging numbered messages:
 6. Restart either process during an outage and verify old streams close rather than attaching to the new process.
 7. Attempt to connect a second bridge client while the first session is active or resumable and verify it receives a busy rejection.
 
+## Throughput benchmark
+
+Run `lightningbnb benchmark server` on the BLE server computer, forward the regular server to its printed port, and run `lightningbnb benchmark client` through the client listener. Exercise upload, download, and both directions with one and four connections. Confirm both bridge processes and both benchmark processes report nonzero live totals/rates in the expected directions, and record the adapter models, MTU, direction, and connection count with the observed result.
+
 ## Platform-specific checks
 
 - Linux: run without root under the documented D-Bus permissions, restart `bluetoothd`, and verify the client/server recover or report actionable errors.

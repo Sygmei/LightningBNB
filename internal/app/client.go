@@ -16,6 +16,7 @@ import (
 	"github.com/Sygmei/LightningBNB/internal/bridge"
 	"github.com/Sygmei/LightningBNB/internal/link"
 	"github.com/Sygmei/LightningBNB/internal/mux"
+	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
 type ClientConfig struct {
@@ -25,6 +26,7 @@ type ClientConfig struct {
 	ScanTimeout    time.Duration
 	ResumeTimeout  time.Duration
 	MaxConnections int
+	StatsInterval  time.Duration
 	Interactive    bool
 	Input          io.Reader
 	Output         io.Writer
@@ -61,7 +63,10 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 		}
 	}
 
-	clientBridge := bridge.NewClient(cfg.ResumeTimeout, cfg.MaxConnections, logger.Printf)
+	counter := &traffic.Counter{}
+	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, logger.Printf)
+	defer stopStats()
+	clientBridge := bridge.NewClientWithTraffic(cfg.ResumeTimeout, cfg.MaxConnections, logger.Printf, counter)
 	bridgeErr := make(chan error, 1)
 	go func() { bridgeErr <- clientBridge.Serve(ctx, listener) }()
 

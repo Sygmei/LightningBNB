@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sygmei/LightningBNB/internal/link"
 	"github.com/Sygmei/LightningBNB/internal/mux"
+	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
 type testAvailability struct {
@@ -41,12 +42,14 @@ func TestTCPBridgeQueuesUntilAvailableAndForwards(t *testing.T) {
 	clientWire, serverWire := net.Pipe()
 	clientMux := mux.NewClient(clientWire, 4)
 	serverMux := mux.NewServer(serverWire, 4)
+	clientTraffic := &traffic.Counter{}
+	serverTraffic := &traffic.Counter{}
 	defer clientMux.Close()
 	defer serverMux.Close()
-	go func() { _ = ServeServer(ctx, serverMux, targetAddr, time.Second, nil) }()
+	go func() { _ = ServeServerWithTraffic(ctx, serverMux, targetAddr, time.Second, nil, serverTraffic) }()
 
 	availability := &testAvailability{done: make(chan struct{})}
-	bridge := NewClient(time.Second, 4, nil)
+	bridge := NewClientWithTraffic(time.Second, 4, nil, clientTraffic)
 	bridge.SetEndpoint(&Endpoint{Link: availability, Mux: clientMux})
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -72,6 +75,12 @@ func TestTCPBridgeQueuesUntilAvailableAndForwards(t *testing.T) {
 	}
 	if string(got) != "queued" {
 		t.Fatalf("got %q", got)
+	}
+	if got := clientTraffic.Snapshot(); got != (traffic.Snapshot{TX: 6, RX: 6}) {
+		t.Fatalf("client traffic = %+v", got)
+	}
+	if got := serverTraffic.Snapshot(); got != (traffic.Snapshot{TX: 6, RX: 6}) {
+		t.Fatalf("server traffic = %+v", got)
 	}
 }
 

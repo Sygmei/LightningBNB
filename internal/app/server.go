@@ -13,6 +13,7 @@ import (
 	"github.com/Sygmei/LightningBNB/internal/bridge"
 	"github.com/Sygmei/LightningBNB/internal/link"
 	"github.com/Sygmei/LightningBNB/internal/mux"
+	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
 type ServerConfig struct {
@@ -22,6 +23,7 @@ type ServerConfig struct {
 	DialTimeout    time.Duration
 	ResumeTimeout  time.Duration
 	MaxConnections int
+	StatsInterval  time.Duration
 	ErrorOutput    io.Writer
 }
 
@@ -37,6 +39,9 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	}
 	defer listener.Close()
 	logger.Printf("advertising %q; forwarding TCP streams to %s", cfg.Name, target)
+	counter := &traffic.Counter{}
+	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, logger.Printf)
+	defer stopStats()
 
 	var currentLink *link.Session
 	var currentMux *mux.Session
@@ -91,7 +96,7 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 			currentMux = mux.NewServer(currentLink, cfg.MaxConnections)
 			muxForBridge := currentMux
 			go func() {
-				if err := bridge.ServeServer(ctx, muxForBridge, target, cfg.DialTimeout, logger.Printf); err != nil && ctx.Err() == nil {
+				if err := bridge.ServeServerWithTraffic(ctx, muxForBridge, target, cfg.DialTimeout, logger.Printf, counter); err != nil && ctx.Err() == nil {
 					logger.Printf("TCP bridge session ended: %v", err)
 				}
 			}()

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Sygmei/LightningBNB/internal/mux"
+	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
 type Availability interface {
@@ -25,6 +26,7 @@ type Client struct {
 	resumeTimeout time.Duration
 	limit         chan struct{}
 	logf          func(string, ...any)
+	traffic       *traffic.Counter
 
 	mu       sync.Mutex
 	endpoint *Endpoint
@@ -32,6 +34,10 @@ type Client struct {
 }
 
 func NewClient(resumeTimeout time.Duration, maxConnections int, logf func(string, ...any)) *Client {
+	return NewClientWithTraffic(resumeTimeout, maxConnections, logf, nil)
+}
+
+func NewClientWithTraffic(resumeTimeout time.Duration, maxConnections int, logf func(string, ...any), counter *traffic.Counter) *Client {
 	if resumeTimeout <= 0 {
 		resumeTimeout = 60 * time.Second
 	}
@@ -45,6 +51,7 @@ func NewClient(resumeTimeout time.Duration, maxConnections int, logf func(string
 		resumeTimeout: resumeTimeout,
 		limit:         make(chan struct{}, maxConnections),
 		logf:          logf,
+		traffic:       counter,
 		notify:        make(chan struct{}),
 	}
 }
@@ -105,7 +112,7 @@ func (c *Client) handle(parent context.Context, conn net.Conn) {
 		c.logf("opening bridged stream for %s: %v", conn.RemoteAddr(), err)
 		return
 	}
-	if err := Proxy(conn, stream); err != nil {
+	if err := ProxyWithTraffic(conn, stream, c.traffic); err != nil {
 		c.logf("bridged connection %s ended with error: %v", conn.RemoteAddr(), err)
 	}
 }

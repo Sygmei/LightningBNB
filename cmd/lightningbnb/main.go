@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -51,6 +52,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		scanTimeout := flags.Duration("scan-timeout", 5*time.Second, "duration of each Bluetooth scan")
 		resumeTimeout := flags.Duration("resume-timeout", 60*time.Second, "time active TCP sessions wait for BLE reconnection")
 		maxConnections := flags.Int("max-connections", 32, "maximum active and queued TCP connections")
+		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -66,6 +68,9 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		if *maxConnections <= 0 || *maxConnections > 65535 {
 			return errors.New("--max-connections must be between 1 and 65535")
 		}
+		if *statsInterval < 0 {
+			return errors.New("--stats-interval must not be negative")
+		}
 		if *device == "" && !interactive {
 			return errors.New("--device is required when stdin is not an interactive terminal")
 		}
@@ -76,6 +81,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			ScanTimeout:    *scanTimeout,
 			ResumeTimeout:  *resumeTimeout,
 			MaxConnections: *maxConnections,
+			StatsInterval:  *statsInterval,
 			Interactive:    interactive,
 			Input:          input,
 			Output:         output,
@@ -90,6 +96,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		dialTimeout := flags.Duration("dial-timeout", 10*time.Second, "target TCP connection timeout")
 		resumeTimeout := flags.Duration("resume-timeout", 60*time.Second, "time active TCP sessions wait for BLE reconnection")
 		maxConnections := flags.Int("max-connections", 32, "maximum multiplexed TCP connections")
+		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -108,6 +115,9 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		if *maxConnections <= 0 || *maxConnections > 65535 {
 			return errors.New("--max-connections must be between 1 and 65535")
 		}
+		if *statsInterval < 0 {
+			return errors.New("--stats-interval must not be negative")
+		}
 		return app.RunServer(ctx, app.ServerConfig{
 			TargetHost:     *targetHost,
 			TargetPort:     *targetPort,
@@ -115,8 +125,86 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			DialTimeout:    *dialTimeout,
 			ResumeTimeout:  *resumeTimeout,
 			MaxConnections: *maxConnections,
+			StatsInterval:  *statsInterval,
 			ErrorOutput:    errorOutput,
 		})
+
+	case "benchmark":
+		if len(args) < 2 {
+			printBenchmarkUsage(errorOutput)
+			return errors.New("benchmark requires a client or server mode")
+		}
+		switch args[1] {
+		case "server":
+			flags := newFlagSet("benchmark server", errorOutput)
+			listenHost := flags.String("listen-host", "127.0.0.1", "benchmark responder listen host")
+			listenPort := flags.Int("listen-port", 0, "benchmark responder port; 0 selects a random port")
+			maxConnections := flags.Int("max-connections", 32, "maximum simultaneous benchmark connections")
+			statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
+			if err := flags.Parse(args[2:]); err != nil {
+				return flagError(err)
+			}
+			if *listenHost == "" {
+				return errors.New("--listen-host must not be empty")
+			}
+			if *listenPort < 0 || *listenPort > 65535 {
+				return errors.New("--listen-port must be between 0 and 65535")
+			}
+			if *maxConnections <= 0 || *maxConnections > 65535 {
+				return errors.New("--max-connections must be between 1 and 65535")
+			}
+			if *statsInterval < 0 {
+				return errors.New("--stats-interval must not be negative")
+			}
+			return app.RunBenchmarkServer(ctx, app.BenchmarkServerConfig{
+				ListenHost:     *listenHost,
+				ListenPort:     *listenPort,
+				MaxConnections: *maxConnections,
+				StatsInterval:  *statsInterval,
+				Output:         output,
+				ErrorOutput:    errorOutput,
+			})
+
+		case "client":
+			flags := newFlagSet("benchmark client", errorOutput)
+			address := flags.String("address", "", "forwarded LightningBNB TCP endpoint (required)")
+			direction := flags.String("direction", "both", "traffic direction: upload, download, or both")
+			duration := flags.Duration("duration", 30*time.Second, "benchmark duration")
+			dialTimeout := flags.Duration("dial-timeout", 10*time.Second, "connection timeout")
+			connections := flags.Int("connections", 4, "parallel benchmark connections")
+			statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
+			if err := flags.Parse(args[2:]); err != nil {
+				return flagError(err)
+			}
+			if *address == "" {
+				return errors.New("--address is required")
+			}
+			if _, _, err := net.SplitHostPort(*address); err != nil {
+				return fmt.Errorf("--address must be HOST:PORT: %w", err)
+			}
+			if *duration <= 0 || *dialTimeout <= 0 {
+				return errors.New("benchmark duration and dial timeout must be greater than zero")
+			}
+			if *connections <= 0 || *connections > 32 {
+				return errors.New("--connections must be between 1 and 32")
+			}
+			if *statsInterval < 0 {
+				return errors.New("--stats-interval must not be negative")
+			}
+			return app.RunBenchmarkClient(ctx, app.BenchmarkClientConfig{
+				Address:       *address,
+				Direction:     *direction,
+				Duration:      *duration,
+				DialTimeout:   *dialTimeout,
+				Connections:   *connections,
+				StatsInterval: *statsInterval,
+				ErrorOutput:   errorOutput,
+			})
+
+		default:
+			printBenchmarkUsage(errorOutput)
+			return fmt.Errorf("unknown benchmark mode %q", args[1])
+		}
 
 	case "version", "--version", "-version":
 		_, _ = fmt.Fprintln(output, version)
@@ -148,7 +236,15 @@ func printUsage(output io.Writer) {
   lightningbnb scan [--timeout 5s] [--all]
   lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--device ID]
   lightningbnb server --target-port PORT [--target-host localhost]
+  lightningbnb benchmark server [--listen-port 0]
+  lightningbnb benchmark client --address HOST:PORT [--duration 30s]
   lightningbnb version`)
+}
+
+func printBenchmarkUsage(output io.Writer) {
+	_, _ = fmt.Fprintln(output, `Usage:
+  lightningbnb benchmark server [--listen-host 127.0.0.1] [--listen-port 0]
+  lightningbnb benchmark client --address HOST:PORT [--direction both] [--duration 30s] [--connections 4]`)
 }
 
 func isTerminal(file *os.File) bool {

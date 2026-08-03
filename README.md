@@ -69,6 +69,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --scan-timeout      duration of each scan (default 5s)
 --resume-timeout    BLE recovery window (default 60s)
 --max-connections   active plus waiting TCP connection limit (default 32)
+--stats-interval    live traffic stats interval; 0 disables stats (default 1s)
 ```
 
 ### Server flags
@@ -80,6 +81,43 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --dial-timeout      target connection timeout (default 10s)
 --resume-timeout    BLE recovery window (default 60s)
 --max-connections   multiplexed TCP connection limit (default 32)
+--stats-interval    live traffic stats interval; 0 disables stats (default 1s)
+```
+
+Client and server print process-relative live traffic totals and rates to stderr. `tx` is forwarded TCP payload sent across Bluetooth and `rx` is payload received from Bluetooth; protocol overhead is excluded. For example:
+
+```text
+lightningbnb: 2026/08/03 12:00:00 traffic tx=1.5 MiB rx=8.2 MiB tx-rate=24.0 KiB/s rx-rate=96.4 KiB/s
+```
+
+## Throughput benchmark
+
+The built-in benchmark saturates the complete TCP-over-BLE bridge with multiple streams and reports live totals and rates. First start its source/sink on the server computer:
+
+```sh
+./lightningbnb benchmark server --listen-port 0
+# LISTEN_ADDR=127.0.0.1:45001
+```
+
+Use that selected port as the regular bridge target in another terminal:
+
+```sh
+./lightningbnb server --target-port 45001
+```
+
+Start the regular bridge client, then point the benchmark client at its forwarded endpoint:
+
+```sh
+./lightningbnb client --listen-port 12340 --device DEVICE_ID
+./lightningbnb benchmark client --address 127.0.0.1:12340 --duration 30s
+```
+
+The benchmark uses four parallel connections by default to keep flow-control windows populated. `--direction upload`, `--direction download`, and `--direction both` measure traffic relative to the benchmark client. Use `--connections N` to compare one through 32 streams, and `--stats-interval` to change the live reporting interval.
+
+The client prints one-second live rates followed by a final whole-run average, for example:
+
+```text
+lightningbnb: 2026/08/03 12:00:30 benchmark result duration=30s tx=3.2 MiB rx=3.0 MiB tx-rate=109.2 KiB/s rx-rate=102.4 KiB/s
 ```
 
 Use `Ctrl+C` to close the listener, BLE resources, active streams, and target sockets cleanly.

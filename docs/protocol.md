@@ -76,3 +76,15 @@ Each stream starts with a 64 KiB receive window. `DATA` consumes window space, a
 Protocol changes that alter these fields or state transitions require a new version. Unknown versions are rejected during `HELLO_ID`/`HELLO_ACK`; there is no downgrade negotiation in v1.
 
 The session ID prevents accidental attachment to the wrong retained state but is not an authentication credential. Pairing is not initiated or enforced by this protocol, and the stream is not encrypted at the application layer.
+
+## Benchmark TCP protocol
+
+The diagnostic `benchmark client` and `benchmark server` commands communicate through an ordinary forwarded TCP stream; this is separate from the BLE link and multiplexing protocols. Each connection starts with:
+
+1. Eight ASCII bytes `LBNBBEN1`.
+2. One direction byte: `1` for upload, `2` for download, or `3` for bidirectional traffic, relative to the benchmark client.
+3. One readiness byte with value `1`, returned by the benchmark server after it accepts the header.
+4. One start byte with value `1`, sent after every parallel connection returns readiness.
+5. Unframed payload until the benchmark client closes the TCP connection.
+
+Benchmark payload is generated and discarded in memory. Its counters exclude the eleven handshake bytes exchanged by each connection.

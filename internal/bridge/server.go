@@ -7,9 +7,14 @@ import (
 	"time"
 
 	"github.com/Sygmei/LightningBNB/internal/mux"
+	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
 func ServeServer(ctx context.Context, session *mux.Session, target string, dialTimeout time.Duration, logf func(string, ...any)) error {
+	return ServeServerWithTraffic(ctx, session, target, dialTimeout, logf, nil)
+}
+
+func ServeServerWithTraffic(ctx context.Context, session *mux.Session, target string, dialTimeout time.Duration, logf func(string, ...any), counter *traffic.Counter) error {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -35,7 +40,7 @@ func ServeServer(ctx context.Context, session *mux.Session, target string, dialT
 				_ = conn.Close()
 				return
 			}
-			if err := Proxy(conn, stream); err != nil {
+			if err := ProxyWithTraffic(conn, stream, counter); err != nil {
 				logf("target connection for stream %d ended with error: %v", stream.ID(), err)
 			}
 		}()
