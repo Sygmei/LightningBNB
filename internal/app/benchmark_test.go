@@ -6,10 +6,10 @@ import (
 	"io"
 	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/Sygmei/LightningBNB/internal/mux"
 	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
@@ -62,21 +62,79 @@ func TestBenchmarkRejectsInvalidHandshake(t *testing.T) {
 	}
 }
 
+func TestBenchmarkResponderRunsInsideMuxSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientWire, serverWire := net.Pipe()
+	clientMux := mux.NewClient(clientWire, 4)
+	serverMux := mux.NewServer(serverWire, 4)
+	defer clientMux.Close()
+	defer serverMux.Close()
+	var counter traffic.Counter
+	serverErrors := make(chan error, 1)
+	go func() { serverErrors <- ServeBenchmarkStreams(ctx, serverMux, &counter, nil) }()
+
+	stream, err := clientMux.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFull(stream, benchmarkHeader(benchmarkUpload)); err != nil {
+		t.Fatal(err)
+	}
+	ready := []byte{0}
+	if _, err := io.ReadFull(stream, ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready[0] != benchmarkReady {
+		t.Fatalf("ready marker = %d", ready[0])
+	}
+	if err := writeFull(stream, []byte{benchmarkStart}); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("mux-benchmark"), 100)
+	if err := writeFull(stream, payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for counter.Snapshot().RX != uint64(len(payload)) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := counter.Snapshot(); got.RX != uint64(len(payload)) {
+		t.Fatalf("server traffic = %+v", got)
+	}
+	cancel()
+	if err := <-serverErrors; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBenchmarkClientAndServerAllDirections(t *testing.T) {
 	serverCtx, cancelServer := context.WithCancel(context.Background())
 	defer cancelServer()
-	addresses := make(chan string, 1)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	serverErrors := make(chan error, 1)
 	go func() {
-		serverErrors <- RunBenchmarkServer(serverCtx, BenchmarkServerConfig{
-			ListenHost:     "127.0.0.1",
-			ListenPort:     0,
-			MaxConnections: 4,
-			StatsInterval:  0,
-			Output:         &addressWriter{addresses: addresses},
-		})
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if serverCtx.Err() != nil {
+					serverErrors <- nil
+				} else {
+					serverErrors <- err
+				}
+				return
+			}
+			go func() { _ = handleBenchmarkConnection(serverCtx, conn, &traffic.Counter{}) }()
+		}
 	}()
-	address := <-addresses
+	address := listener.Addr().String()
 
 	for _, direction := range []string{"upload", "download", "both"} {
 		t.Run(direction, func(t *testing.T) {
@@ -106,22 +164,10 @@ func TestBenchmarkClientAndServerAllDirections(t *testing.T) {
 	}
 
 	cancelServer()
+	_ = listener.Close()
 	if err := <-serverErrors; err != nil {
 		t.Fatal(err)
 	}
-}
-
-type addressWriter struct {
-	addresses chan<- string
-	once      sync.Once
-}
-
-func (w *addressWriter) Write(data []byte) (int, error) {
-	line := strings.TrimSpace(string(data))
-	if strings.HasPrefix(line, "LISTEN_ADDR=") {
-		w.once.Do(func() { w.addresses <- strings.TrimPrefix(line, "LISTEN_ADDR=") })
-	}
-	return len(data), nil
 }
 
 func TestParseBenchmarkDirection(t *testing.T) {

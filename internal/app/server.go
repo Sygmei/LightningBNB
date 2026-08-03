@@ -24,6 +24,7 @@ type ServerConfig struct {
 	ResumeTimeout  time.Duration
 	MaxConnections int
 	StatsInterval  time.Duration
+	Benchmark      bool
 	ErrorOutput    io.Writer
 }
 
@@ -32,13 +33,20 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 		cfg.ErrorOutput = io.Discard
 	}
 	logger := log.New(cfg.ErrorOutput, "lightningbnb: ", log.LstdFlags)
-	target := net.JoinHostPort(cfg.TargetHost, strconv.Itoa(cfg.TargetPort))
+	target := ""
+	if !cfg.Benchmark {
+		target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(cfg.TargetPort))
+	}
 	listener, err := ble.StartServer(ctx, cfg.Name)
 	if err != nil {
 		return fmt.Errorf("start Bluetooth server: %w", err)
 	}
 	defer listener.Close()
-	logger.Printf("advertising %q; forwarding TCP streams to %s", cfg.Name, target)
+	if cfg.Benchmark {
+		logger.Printf("advertising %q in benchmark mode", cfg.Name)
+	} else {
+		logger.Printf("advertising %q; forwarding TCP streams to %s", cfg.Name, target)
+	}
 	counter := &traffic.Counter{}
 	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, logger.Printf)
 	defer stopStats()
@@ -95,11 +103,19 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 			})
 			currentMux = mux.NewServer(currentLink, cfg.MaxConnections)
 			muxForBridge := currentMux
-			go func() {
-				if err := bridge.ServeServerWithTraffic(ctx, muxForBridge, target, cfg.DialTimeout, logger.Printf, counter); err != nil && ctx.Err() == nil {
-					logger.Printf("TCP bridge session ended: %v", err)
-				}
-			}()
+			if cfg.Benchmark {
+				go func() {
+					if err := ServeBenchmarkStreams(ctx, muxForBridge, counter, logger.Printf); err != nil && ctx.Err() == nil {
+						logger.Printf("benchmark session ended: %v", err)
+					}
+				}()
+			} else {
+				go func() {
+					if err := bridge.ServeServerWithTraffic(ctx, muxForBridge, target, cfg.DialTimeout, logger.Printf, counter); err != nil && ctx.Err() == nil {
+						logger.Printf("TCP bridge session ended: %v", err)
+					}
+				}()
+			}
 		}
 		if err := currentLink.BindServer(handshakeCtx, packetConn, hello); err != nil {
 			_ = link.SendReject(handshakeCtx, packetConn, "resume failed")

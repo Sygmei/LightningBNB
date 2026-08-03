@@ -65,7 +65,7 @@ Client-created stream IDs are non-zero odd integers. Payloads are limited to 16 
 | `FIN` | `0x06` | none |
 | `RESET` | `0x07` | UTF-8 diagnostic, at most 256 bytes |
 
-`OPEN` asks the server to dial its fixed configured target. The client does not forward data until `OPEN_OK`; target DNS, refusal, and timeout failures produce `OPEN_ERROR`.
+`OPEN` normally asks the server to dial its fixed configured target. The client does not forward data until `OPEN_OK`; target DNS, refusal, and timeout failures produce `OPEN_ERROR`. A server started with `--benchmark` instead approves each `OPEN` as an in-memory benchmark stream and never dials a TCP target.
 
 Each stream starts with a 64 KiB receive window. `DATA` consumes window space, and application reads return it through `WINDOW_UPDATE`. The sender splits writes into at most 16 KiB frames and schedules at most one frame per ready stream before rotating to another ready stream.
 
@@ -79,12 +79,12 @@ The session ID prevents accidental attachment to the wrong retained state but is
 
 ## Benchmark TCP protocol
 
-The diagnostic `benchmark client` and `benchmark server` commands communicate through an ordinary forwarded TCP stream; this is separate from the BLE link and multiplexing protocols. Each connection starts with:
+The diagnostic `benchmark` client and a server running with `--benchmark` communicate through ordinary multiplexed streams. The server handles these streams in memory instead of dialing a TCP target. Each stream starts with:
 
 1. Eight ASCII bytes `LBNBBEN1`.
 2. One direction byte: `1` for upload, `2` for download, or `3` for bidirectional traffic, relative to the benchmark client.
 3. One readiness byte with value `1`, returned by the benchmark server after it accepts the header.
-4. One start byte with value `1`, sent after every parallel connection returns readiness.
-5. Unframed payload until the benchmark client closes the TCP connection.
+4. One start byte with value `1`, sent after every parallel stream returns readiness.
+5. Unframed payload until the benchmark client closes the stream.
 
 Benchmark payload is generated and discarded in memory. Its counters exclude the eleven handshake bytes exchanged by each connection.

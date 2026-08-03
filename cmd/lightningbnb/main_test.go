@@ -38,14 +38,26 @@ func TestClientRejectsNegativeStatsInterval(t *testing.T) {
 	}
 }
 
-func TestBenchmarkRequiresModeAndAddress(t *testing.T) {
+func TestBenchmarkRequiresDeviceWithoutTerminal(t *testing.T) {
 	var output bytes.Buffer
-	if err := run(context.Background(), []string{"benchmark"}, strings.NewReader(""), &output, &output, false); err == nil || !strings.Contains(err.Error(), "client or server") {
+	if err := run(context.Background(), []string{"benchmark"}, strings.NewReader(""), &output, &output, false); err == nil || !strings.Contains(err.Error(), "--device") {
 		t.Fatalf("benchmark error = %v", err)
 	}
-	output.Reset()
-	if err := run(context.Background(), []string{"benchmark", "client"}, strings.NewReader(""), &output, &output, false); err == nil || !strings.Contains(err.Error(), "--address") {
-		t.Fatalf("benchmark client error = %v", err)
+}
+
+func TestBenchmarkRejectsInvalidDirectionBeforeConnecting(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"benchmark", "--device", "test", "--direction", "sideways"}, strings.NewReader(""), &output, &output, false)
+	if err == nil || !strings.Contains(err.Error(), "--direction") {
+		t.Fatalf("benchmark error = %v", err)
+	}
+}
+
+func TestBenchmarkServerRejectsTargetPort(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"server", "--benchmark", "--target-port", "1234"}, strings.NewReader(""), &output, &output, false)
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("server error = %v", err)
 	}
 }
 

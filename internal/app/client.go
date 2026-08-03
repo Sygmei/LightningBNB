@@ -20,17 +20,19 @@ import (
 )
 
 type ClientConfig struct {
-	ListenHost     string
-	ListenPort     int
-	DeviceID       string
-	ScanTimeout    time.Duration
-	ResumeTimeout  time.Duration
-	MaxConnections int
-	StatsInterval  time.Duration
-	Interactive    bool
-	Input          io.Reader
-	Output         io.Writer
-	ErrorOutput    io.Writer
+	ListenHost         string
+	ListenPort         int
+	DeviceID           string
+	ScanTimeout        time.Duration
+	ResumeTimeout      time.Duration
+	MaxConnections     int
+	StatsInterval      time.Duration
+	Benchmark          *BenchmarkClientConfig
+	SuppressListenAddr bool
+	Interactive        bool
+	Input              io.Reader
+	Output             io.Writer
+	ErrorOutput        io.Writer
 }
 
 func RunClient(ctx context.Context, cfg ClientConfig) error {
@@ -49,7 +51,9 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 		return fmt.Errorf("listen for local TCP connections: %w", err)
 	}
 	defer listener.Close()
-	_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR=%s\n", listener.Addr())
+	if !cfg.SuppressListenAddr {
+		_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR=%s\n", listener.Addr())
+	}
 
 	adapter := ble.NewAdapter()
 	deviceID := cfg.DeviceID
@@ -69,6 +73,13 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	clientBridge := bridge.NewClientWithTraffic(cfg.ResumeTimeout, cfg.MaxConnections, logger.Printf, counter)
 	bridgeErr := make(chan error, 1)
 	go func() { bridgeErr <- clientBridge.Serve(ctx, listener) }()
+	var benchmarkDone <-chan error
+	var cancelBenchmark context.CancelFunc
+	defer func() {
+		if cancelBenchmark != nil {
+			cancelBenchmark()
+		}
+	}()
 
 	for ctx.Err() == nil {
 		linkSession, err := link.NewSession(link.Config{
@@ -85,9 +96,19 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 
 		for ctx.Err() == nil {
 			select {
+			case err := <-benchmarkDone:
+				_ = muxSession.Close()
+				_ = linkSession.Close()
+				if err != nil {
+					return fmt.Errorf("benchmark failed: %w", err)
+				}
+				return nil
 			case <-linkSession.Done():
 				_ = muxSession.Close()
 				logger.Printf("BLE session ended: %v", linkSession.Err())
+				if cfg.Benchmark != nil {
+					return fmt.Errorf("benchmark BLE session ended: %w", linkSession.Err())
+				}
 				goto nextSession
 			default:
 			}
@@ -125,6 +146,16 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				continue
 			}
 			logger.Printf("connected to %s", deviceID)
+			if cfg.Benchmark != nil && benchmarkDone == nil {
+				benchmarkCfg := *cfg.Benchmark
+				benchmarkCfg.Address = listener.Addr().String()
+				benchmarkCfg.ErrorOutput = cfg.ErrorOutput
+				benchmarkCtx, cancel := context.WithCancel(ctx)
+				cancelBenchmark = cancel
+				done := make(chan error, 1)
+				benchmarkDone = done
+				go func() { done <- RunBenchmarkClient(benchmarkCtx, benchmarkCfg) }()
+			}
 		}
 		_ = muxSession.Close()
 		_ = linkSession.Close()

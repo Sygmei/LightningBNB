@@ -7,11 +7,11 @@ import (
 	"io"
 	"log"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Sygmei/LightningBNB/internal/mux"
 	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
@@ -30,15 +30,6 @@ const (
 	benchmarkBoth
 )
 
-type BenchmarkServerConfig struct {
-	ListenHost     string
-	ListenPort     int
-	MaxConnections int
-	StatsInterval  time.Duration
-	Output         io.Writer
-	ErrorOutput    io.Writer
-}
-
 type BenchmarkClientConfig struct {
 	Address       string
 	Direction     string
@@ -49,78 +40,8 @@ type BenchmarkClientConfig struct {
 	ErrorOutput   io.Writer
 }
 
-// RunBenchmarkServer starts the benchmark source/sink that should be selected
-// as the ordinary LightningBNB server's fixed TCP target.
-func RunBenchmarkServer(ctx context.Context, cfg BenchmarkServerConfig) error {
-	if cfg.ListenHost == "" {
-		return errors.New("benchmark listen host must not be empty")
-	}
-	if cfg.ListenPort < 0 || cfg.ListenPort > 65535 {
-		return errors.New("benchmark listen port must be between 0 and 65535")
-	}
-	if cfg.MaxConnections <= 0 {
-		return errors.New("benchmark max connections must be greater than zero")
-	}
-	if cfg.StatsInterval < 0 {
-		return errors.New("benchmark stats interval must not be negative")
-	}
-	if cfg.Output == nil {
-		cfg.Output = io.Discard
-	}
-	if cfg.ErrorOutput == nil {
-		cfg.ErrorOutput = io.Discard
-	}
-	logger := log.New(cfg.ErrorOutput, "lightningbnb: ", log.LstdFlags)
-	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)))
-	if err != nil {
-		return fmt.Errorf("listen for benchmark connections: %w", err)
-	}
-	_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR=%s\n", listener.Addr())
-	logger.Printf("benchmark responder listening on %s", listener.Addr())
-
-	runCtx, cancel := context.WithCancel(ctx)
-	counter := &traffic.Counter{}
-	stopStats := startTrafficReporter(runCtx, cfg.StatsInterval, counter, logger.Printf)
-	limit := make(chan struct{}, cfg.MaxConnections)
-	var handlers sync.WaitGroup
-	go func() {
-		<-runCtx.Done()
-		_ = listener.Close()
-	}()
-	defer func() {
-		cancel()
-		_ = listener.Close()
-		handlers.Wait()
-		stopStats()
-	}()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return fmt.Errorf("accept benchmark connection: %w", err)
-		}
-		select {
-		case limit <- struct{}{}:
-			handlers.Add(1)
-			go func() {
-				defer handlers.Done()
-				defer func() { <-limit }()
-				if err := handleBenchmarkConnection(runCtx, conn, counter); err != nil && runCtx.Err() == nil {
-					logger.Printf("benchmark connection from %s ended: %v", conn.RemoteAddr(), err)
-				}
-			}()
-		default:
-			logger.Printf("rejecting benchmark connection from %s: connection limit reached", conn.RemoteAddr())
-			_ = conn.Close()
-		}
-	}
-}
-
-// RunBenchmarkClient drives as much payload as possible through an existing
-// LightningBNB client listener for the requested duration.
+// RunBenchmarkClient drives as much payload as possible through the local
+// listener owned by a LightningBNB benchmark client.
 func RunBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig) error {
 	if cfg.Address == "" {
 		return errors.New("benchmark address must not be empty")
@@ -179,8 +100,7 @@ func RunBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig) error {
 	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, logger.Printf)
 	defer stopStats()
 	logger.Printf(
-		"benchmark started: endpoint=%s direction=%s connections=%d duration=%s",
-		cfg.Address,
+		"benchmark started: direction=%s streams=%d duration=%s",
 		benchmarkDirectionName(direction),
 		cfg.Connections,
 		cfg.Duration,
@@ -219,10 +139,49 @@ func RunBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig) error {
 	}
 }
 
-func handleBenchmarkConnection(ctx context.Context, conn net.Conn, counter *traffic.Counter) error {
+func ServeBenchmarkStreams(ctx context.Context, session *mux.Session, counter *traffic.Counter, logf func(string, ...any)) error {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	for {
+		stream, err := session.Accept(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		go func() {
+			if err := stream.Approve(); err != nil {
+				_ = stream.Close()
+				return
+			}
+			if err := handleBenchmarkConnection(ctx, stream, counter); err != nil && ctx.Err() == nil {
+				logf("benchmark stream %d ended: %v", stream.ID(), err)
+			}
+		}()
+	}
+}
+
+type benchmarkConnection interface {
+	io.Reader
+	io.Writer
+	io.Closer
+}
+
+func handleBenchmarkConnection(ctx context.Context, conn benchmarkConnection, counter *traffic.Counter) error {
 	defer conn.Close()
 	configureBenchmarkTCP(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	setBenchmarkDeadline(conn, time.Now().Add(10*time.Second))
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
 	header := make([]byte, len(benchmarkMagic)+1)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return fmt.Errorf("read benchmark handshake: %w", err)
@@ -244,17 +203,7 @@ func handleBenchmarkConnection(ctx context.Context, conn net.Conn, counter *traf
 	if start[0] != benchmarkStart {
 		return errors.New("invalid benchmark start marker")
 	}
-	_ = conn.SetReadDeadline(time.Time{})
-
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
-	}()
-	defer close(done)
+	setBenchmarkDeadline(conn, time.Time{})
 
 	switch direction {
 	case benchmarkUpload:
@@ -338,6 +287,11 @@ func parseBenchmarkDirection(value string) (benchmarkDirection, error) {
 	}
 }
 
+func ValidateBenchmarkDirection(value string) error {
+	_, err := parseBenchmarkDirection(value)
+	return err
+}
+
 func benchmarkDirectionName(direction benchmarkDirection) string {
 	switch direction {
 	case benchmarkUpload:
@@ -376,11 +330,17 @@ func writeFull(writer io.Writer, data []byte) error {
 	return nil
 }
 
-func configureBenchmarkTCP(conn net.Conn) {
+func configureBenchmarkTCP(conn benchmarkConnection) {
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetNoDelay(true)
 		_ = tcp.SetReadBuffer(1 << 20)
 		_ = tcp.SetWriteBuffer(1 << 20)
+	}
+}
+
+func setBenchmarkDeadline(conn benchmarkConnection, deadline time.Time) {
+	if deadlineConn, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = deadlineConn.SetDeadline(deadline)
 	}
 }
 

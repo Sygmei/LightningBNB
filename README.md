@@ -76,12 +76,13 @@ Connect an ordinary TCP application to that address. The port is selected by the
 
 ```text
 --target-host       fixed target hostname, IPv4, or IPv6 address (default localhost)
---target-port       fixed target TCP port (required)
+--target-port       fixed target TCP port (required unless --benchmark)
 --name              advertised bridge name (default LightningBNB; Windows may omit it)
 --dial-timeout      target connection timeout (default 10s)
 --resume-timeout    BLE recovery window (default 60s)
 --max-connections   multiplexed TCP connection limit (default 32)
 --stats-interval    live traffic stats interval; 0 disables stats (default 1s)
+--benchmark         handle in-memory throughput streams instead of a TCP target
 ```
 
 Client and server print process-relative live traffic totals and rates to stderr. `tx` is forwarded TCP payload sent across Bluetooth and `rx` is payload received from Bluetooth; protocol overhead is excluded. For example:
@@ -92,27 +93,21 @@ lightningbnb: 2026/08/03 12:00:00 traffic tx=1.5 MiB rx=8.2 MiB tx-rate=24.0 KiB
 
 ## Throughput benchmark
 
-The built-in benchmark saturates the complete TCP-over-BLE bridge with multiple streams and reports live totals and rates. First start its source/sink on the server computer:
+The built-in benchmark saturates the complete TCP-over-BLE path with multiple streams and reports live totals and rates. It needs only one process on each computer.
+
+Start the regular server command in benchmark mode; no TCP target is needed:
 
 ```sh
-./lightningbnb benchmark server --listen-port 0
-# LISTEN_ADDR=127.0.0.1:45001
+./lightningbnb server --benchmark
 ```
 
-Use that selected port as the regular bridge target in another terminal:
+Then run the benchmark subcommand on the client computer:
 
 ```sh
-./lightningbnb server --target-port 45001
+./lightningbnb benchmark --device DEVICE_ID --duration 30s
 ```
 
-Start the regular bridge client, then point the benchmark client at its forwarded endpoint:
-
-```sh
-./lightningbnb client --listen-port 12340 --device DEVICE_ID
-./lightningbnb benchmark client --address 127.0.0.1:12340 --duration 30s
-```
-
-The benchmark uses four parallel connections by default to keep flow-control windows populated. `--direction upload`, `--direction download`, and `--direction both` measure traffic relative to the benchmark client. Use `--connections N` to compare one through 32 streams, and `--stats-interval` to change the live reporting interval.
+The benchmark uses four parallel multiplexed streams by default to keep flow-control windows populated. `--direction upload`, `--direction download`, and `--direction both` measure traffic relative to the benchmark client. Use `--connections N` to compare one through 32 streams, and `--stats-interval` to change the live reporting interval. BLE session resumption remains active during the run.
 
 The client prints one-second live rates followed by a final whole-run average, for example:
 

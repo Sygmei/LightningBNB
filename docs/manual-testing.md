@@ -34,7 +34,7 @@ With one or more streams actively exchanging numbered messages:
 
 ## Throughput benchmark
 
-Run `lightningbnb benchmark server` on the BLE server computer, forward the regular server to its printed port, and run `lightningbnb benchmark client` through the client listener. Exercise upload, download, and both directions with one and four connections. Confirm both bridge processes and both benchmark processes report nonzero live totals/rates in the expected directions, and record the adapter models, MTU, direction, and connection count with the observed result.
+Run `lightningbnb server --benchmark` on the BLE server computer and `lightningbnb benchmark --device ID` on the client computer. Exercise upload, download, and both directions with one and four streams. Confirm both processes report nonzero live totals/rates in the expected directions, and record the adapter models, MTU, direction, and stream count with the observed result.
 
 ## Platform-specific checks
 
