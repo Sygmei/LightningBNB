@@ -141,7 +141,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		direction := flags.String("direction", "both", "traffic direction: upload, download, or both")
 		duration := flags.Duration("duration", 30*time.Second, "benchmark duration")
 		setupTimeout := flags.Duration("setup-timeout", 30*time.Second, "end-to-end stream setup timeout")
-		connections := flags.Int("connections", 4, "parallel benchmark streams")
+		connections := flags.Int("connections", 1, "parallel benchmark streams per direction")
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
@@ -149,10 +149,10 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		if *scanTimeout <= 0 || *resumeTimeout <= 0 || *duration <= 0 || *setupTimeout <= 0 {
 			return errors.New("benchmark timeouts and duration must be greater than zero")
 		}
-		if *connections <= 0 || *connections > 32 {
-			return errors.New("--connections must be between 1 and 32")
-		}
 		if err := app.ValidateBenchmarkDirection(*direction); err != nil {
+			return err
+		}
+		if err := app.ValidateBenchmarkConnections(*direction, *connections); err != nil {
 			return err
 		}
 		if *statsInterval < 0 {

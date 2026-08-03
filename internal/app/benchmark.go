@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -16,10 +17,11 @@ import (
 )
 
 const (
-	benchmarkMagic     = "LBNBBEN1"
-	benchmarkBlockSize = 64 * 1024
-	benchmarkReady     = byte(1)
-	benchmarkStart     = byte(1)
+	benchmarkMagic             = "LBNBBEN1"
+	benchmarkBlockSize         = 1024
+	benchmarkOutstandingWindow = 4 * benchmarkBlockSize
+	benchmarkReady             = byte(1)
+	benchmarkStart             = byte(1)
 )
 
 type benchmarkDirection byte
@@ -40,17 +42,49 @@ type BenchmarkClientConfig struct {
 	ErrorOutput   io.Writer
 }
 
-// RunBenchmarkClient drives as much payload as possible through the local
-// listener owned by a LightningBNB benchmark client.
+type benchmarkConnection interface {
+	io.Reader
+	io.Writer
+	io.Closer
+}
+
+type benchmarkPeer struct {
+	conn      benchmarkConnection
+	direction benchmarkDirection
+}
+
+type benchmarkOpener func(context.Context) (benchmarkConnection, error)
+
+// RunBenchmarkClient drives the benchmark through a TCP endpoint. It remains
+// useful to integration tests; the public benchmark command opens multiplexed
+// streams directly with RunMuxBenchmarkClient.
 func RunBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig) error {
 	if cfg.Address == "" {
 		return errors.New("benchmark address must not be empty")
 	}
+	dialer := net.Dialer{Timeout: cfg.DialTimeout}
+	return runBenchmarkClient(ctx, cfg, func(ctx context.Context) (benchmarkConnection, error) {
+		conn, err := dialer.DialContext(ctx, "tcp", cfg.Address)
+		if err != nil {
+			return nil, fmt.Errorf("connect to benchmark endpoint %s: %w", cfg.Address, err)
+		}
+		return conn, nil
+	})
+}
+
+func RunMuxBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig, session *mux.Session) error {
+	return runBenchmarkClient(ctx, cfg, func(ctx context.Context) (benchmarkConnection, error) {
+		return session.Open(ctx)
+	})
+}
+
+func runBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig, open benchmarkOpener) error {
 	if cfg.Duration <= 0 || cfg.DialTimeout <= 0 {
-		return errors.New("benchmark duration and dial timeout must be greater than zero")
+		return errors.New("benchmark duration and setup timeout must be greater than zero")
 	}
-	if cfg.Connections <= 0 || cfg.Connections > 32 {
-		return errors.New("benchmark connections must be between 1 and 32")
+	directions, err := benchmarkDirections(cfg.Direction, cfg.Connections)
+	if err != nil {
+		return err
 	}
 	if cfg.StatsInterval < 0 {
 		return errors.New("benchmark stats interval must not be negative")
@@ -58,42 +92,39 @@ func RunBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig) error {
 	if cfg.ErrorOutput == nil {
 		cfg.ErrorOutput = io.Discard
 	}
-	direction, err := parseBenchmarkDirection(cfg.Direction)
-	if err != nil {
-		return err
-	}
+	direction, _ := parseBenchmarkDirection(cfg.Direction)
 	logger := log.New(cfg.ErrorOutput, "lightningbnb: ", log.LstdFlags)
-	dialer := net.Dialer{Timeout: cfg.DialTimeout}
-	connections := make([]net.Conn, 0, cfg.Connections)
-	defer func() { closeBenchmarkConnections(connections) }()
-	header := benchmarkHeader(direction)
-	for range cfg.Connections {
-		conn, err := dialer.DialContext(ctx, "tcp", cfg.Address)
+	peers := make([]benchmarkPeer, 0, len(directions))
+	defer func() { closeBenchmarkConnections(peers) }()
+	for _, streamDirection := range directions {
+		setupCtx, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
+		conn, err := open(setupCtx)
+		cancel()
 		if err != nil {
-			return fmt.Errorf("connect to benchmark endpoint %s: %w", cfg.Address, err)
+			return fmt.Errorf("open benchmark stream: %w", err)
 		}
 		configureBenchmarkTCP(conn)
-		_ = conn.SetDeadline(time.Now().Add(cfg.DialTimeout))
-		if err := writeFull(conn, header); err != nil {
+		setBenchmarkDeadline(conn, time.Now().Add(cfg.DialTimeout))
+		if err := writeFull(conn, benchmarkHeader(streamDirection)); err != nil {
 			_ = conn.Close()
-			return fmt.Errorf("start benchmark connection: %w", err)
+			return fmt.Errorf("start benchmark stream: %w", err)
 		}
-		connections = append(connections, conn)
+		peers = append(peers, benchmarkPeer{conn: conn, direction: streamDirection})
 	}
-	for _, conn := range connections {
+	for _, peer := range peers {
 		ready := []byte{0}
-		if _, err := io.ReadFull(conn, ready); err != nil {
+		if _, err := io.ReadFull(peer.conn, ready); err != nil {
 			return fmt.Errorf("wait for benchmark responder: %w", err)
 		}
 		if ready[0] != benchmarkReady {
 			return errors.New("invalid benchmark readiness marker")
 		}
 	}
-	for _, conn := range connections {
-		if err := writeFull(conn, []byte{benchmarkStart}); err != nil {
-			return fmt.Errorf("release benchmark connection: %w", err)
+	for _, peer := range peers {
+		if err := writeFull(peer.conn, []byte{benchmarkStart}); err != nil {
+			return fmt.Errorf("release benchmark stream: %w", err)
 		}
-		_ = conn.SetWriteDeadline(time.Time{})
+		setBenchmarkDeadline(peer.conn, time.Time{})
 	}
 
 	counter := &traffic.Counter{}
@@ -102,25 +133,34 @@ func RunBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig) error {
 	logger.Printf(
 		"benchmark started: direction=%s streams=%d duration=%s",
 		benchmarkDirectionName(direction),
-		cfg.Connections,
+		len(peers),
 		cfg.Duration,
 	)
 
-	results := make(chan error, cfg.Connections*2)
+	results := make(chan error, len(peers))
 	var pumps sync.WaitGroup
-	for _, conn := range connections {
-		startBenchmarkClientPumps(conn, direction, counter, results, &pumps)
+	for _, peer := range peers {
+		peer := peer
+		pumps.Add(1)
+		go func() {
+			defer pumps.Done()
+			if peer.direction == benchmarkUpload {
+				results <- pumpBenchmarkSend(peer.conn, counter.AddTX)
+			} else {
+				results <- pumpBenchmarkReceive(peer.conn, counter.AddRX)
+			}
+		}()
 	}
 	startedAt := time.Now()
 	timer := time.NewTimer(cfg.Duration)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		closeBenchmarkConnections(connections)
+		closeBenchmarkConnections(peers)
 		pumps.Wait()
 		return nil
 	case <-timer.C:
-		closeBenchmarkConnections(connections)
+		closeBenchmarkConnections(peers)
 		pumps.Wait()
 		elapsed := time.Since(startedAt)
 		logger.Printf(
@@ -130,12 +170,12 @@ func RunBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig) error {
 		)
 		return nil
 	case err := <-results:
-		closeBenchmarkConnections(connections)
+		closeBenchmarkConnections(peers)
 		pumps.Wait()
 		if ctx.Err() != nil {
 			return nil
 		}
-		return fmt.Errorf("benchmark connection ended before %s: %w", cfg.Duration, err)
+		return fmt.Errorf("benchmark stream ended before %s: %w", cfg.Duration, err)
 	}
 }
 
@@ -146,7 +186,7 @@ func ServeBenchmarkStreams(ctx context.Context, session *mux.Session, counter *t
 	for {
 		stream, err := session.Accept(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || cleanBenchmarkSessionError(err) {
 				return nil
 			}
 			return err
@@ -161,12 +201,6 @@ func ServeBenchmarkStreams(ctx context.Context, session *mux.Session, counter *t
 			}
 		}()
 	}
-}
-
-type benchmarkConnection interface {
-	io.Reader
-	io.Writer
-	io.Closer
 }
 
 func handleBenchmarkConnection(ctx context.Context, conn benchmarkConnection, counter *traffic.Counter) error {
@@ -190,8 +224,8 @@ func handleBenchmarkConnection(ctx context.Context, conn benchmarkConnection, co
 		return errors.New("invalid benchmark handshake")
 	}
 	direction := benchmarkDirection(header[len(benchmarkMagic)])
-	if !direction.valid() {
-		return errors.New("invalid benchmark direction")
+	if direction != benchmarkUpload && direction != benchmarkDownload {
+		return errors.New("invalid benchmark stream direction")
 	}
 	if err := writeFull(conn, []byte{benchmarkReady}); err != nil {
 		return fmt.Errorf("confirm benchmark readiness: %w", err)
@@ -205,73 +239,113 @@ func handleBenchmarkConnection(ctx context.Context, conn benchmarkConnection, co
 	}
 	setBenchmarkDeadline(conn, time.Time{})
 
-	switch direction {
-	case benchmarkUpload:
-		return cleanBenchmarkServerError(pumpBenchmarkRead(conn, counter.AddRX))
-	case benchmarkDownload:
-		return cleanBenchmarkServerError(pumpBenchmarkWrite(conn, counter.AddTX))
-	case benchmarkBoth:
-		results := make(chan error, 2)
-		go func() { results <- pumpBenchmarkWrite(conn, counter.AddTX) }()
-		go func() { results <- pumpBenchmarkRead(conn, counter.AddRX) }()
-		first := <-results
-		_ = conn.Close()
-		second := <-results
-		if err := cleanBenchmarkServerError(first); err != nil {
-			return err
-		}
-		return cleanBenchmarkServerError(second)
-	default:
-		return errors.New("invalid benchmark direction")
+	if direction == benchmarkUpload {
+		return cleanBenchmarkServerError(pumpBenchmarkReceive(conn, counter.AddRX))
 	}
+	return cleanBenchmarkServerError(pumpBenchmarkSend(conn, counter.AddTX))
 }
 
-func startBenchmarkClientPumps(conn net.Conn, direction benchmarkDirection, counter *traffic.Counter, results chan<- error, pumps *sync.WaitGroup) {
-	start := func(pump func() error) {
-		pumps.Add(1)
-		go func() {
-			defer pumps.Done()
-			results <- pump()
-		}()
-	}
-	if direction == benchmarkUpload || direction == benchmarkBoth {
-		start(func() error { return pumpBenchmarkWrite(conn, counter.AddTX) })
-	}
-	if direction == benchmarkDownload || direction == benchmarkBoth {
-		start(func() error { return pumpBenchmarkRead(conn, counter.AddRX) })
-	}
+type benchmarkACK struct {
+	total uint64
+	err   error
 }
 
-func pumpBenchmarkWrite(writer io.Writer, add func(uint64)) error {
+// pumpBenchmarkSend maintains a small application window and counts only bytes
+// cumulatively acknowledged by the receiver. This prevents socket/mux buffers
+// from being reported as Bluetooth throughput.
+func pumpBenchmarkSend(conn benchmarkConnection, addConfirmed func(uint64)) error {
 	payload := make([]byte, benchmarkBlockSize)
 	for i := range payload {
 		payload[i] = byte(i)
 	}
+	acks := make(chan benchmarkACK, benchmarkOutstandingWindow/benchmarkBlockSize+2)
+	go func() {
+		var encoded [8]byte
+		for {
+			if _, err := io.ReadFull(conn, encoded[:]); err != nil {
+				acks <- benchmarkACK{err: err}
+				return
+			}
+			acks <- benchmarkACK{total: binary.BigEndian.Uint64(encoded[:])}
+		}
+	}()
+
+	var sent uint64
+	var confirmed uint64
 	for {
-		n, err := writer.Write(payload)
-		if n > 0 {
-			add(uint64(n))
+		for sent-confirmed < benchmarkOutstandingWindow {
+			remaining := benchmarkOutstandingWindow - (sent - confirmed)
+			block := min(uint64(len(payload)), remaining)
+			if err := writeFull(conn, payload[:block]); err != nil {
+				return err
+			}
+			sent += block
 		}
-		if err != nil {
-			return err
+		ack := <-acks
+		if ack.err != nil {
+			return ack.err
 		}
-		if n == 0 {
-			return io.ErrNoProgress
+		if ack.total < confirmed || ack.total > sent {
+			return errors.New("invalid benchmark acknowledgement")
+		}
+		if ack.total > confirmed {
+			addConfirmed(ack.total - confirmed)
+			confirmed = ack.total
 		}
 	}
 }
 
-func pumpBenchmarkRead(reader io.Reader, add func(uint64)) error {
+// pumpBenchmarkReceive counts delivered bytes and returns cumulative
+// acknowledgements after each 1 KiB of progress.
+func pumpBenchmarkReceive(conn benchmarkConnection, addReceived func(uint64)) error {
 	buffer := make([]byte, benchmarkBlockSize)
+	var total uint64
+	var acknowledged uint64
 	for {
-		n, err := reader.Read(buffer)
+		n, err := conn.Read(buffer)
 		if n > 0 {
-			add(uint64(n))
+			total += uint64(n)
+			addReceived(uint64(n))
+			if total-acknowledged >= benchmarkBlockSize {
+				var encoded [8]byte
+				binary.BigEndian.PutUint64(encoded[:], total)
+				if writeErr := writeFull(conn, encoded[:]); writeErr != nil {
+					return writeErr
+				}
+				acknowledged = total
+			}
 		}
 		if err != nil {
 			return err
 		}
 	}
+}
+
+func benchmarkDirections(value string, connections int) ([]benchmarkDirection, error) {
+	if connections <= 0 || connections > 32 {
+		return nil, errors.New("benchmark connections must be between 1 and 32")
+	}
+	direction, err := parseBenchmarkDirection(value)
+	if err != nil {
+		return nil, err
+	}
+	streamCount := connections
+	if direction == benchmarkBoth {
+		streamCount *= 2
+	}
+	if streamCount > 32 {
+		return nil, errors.New("bidirectional benchmarks support at most 16 streams per direction")
+	}
+	directions := make([]benchmarkDirection, 0, streamCount)
+	for range connections {
+		if direction == benchmarkUpload || direction == benchmarkBoth {
+			directions = append(directions, benchmarkUpload)
+		}
+		if direction == benchmarkDownload || direction == benchmarkBoth {
+			directions = append(directions, benchmarkDownload)
+		}
+	}
+	return directions, nil
 }
 
 func parseBenchmarkDirection(value string) (benchmarkDirection, error) {
@@ -292,6 +366,11 @@ func ValidateBenchmarkDirection(value string) error {
 	return err
 }
 
+func ValidateBenchmarkConnections(direction string, connections int) error {
+	_, err := benchmarkDirections(direction, connections)
+	return err
+}
+
 func benchmarkDirectionName(direction benchmarkDirection) string {
 	switch direction {
 	case benchmarkUpload:
@@ -303,10 +382,6 @@ func benchmarkDirectionName(direction benchmarkDirection) string {
 	default:
 		return "unknown"
 	}
-}
-
-func (d benchmarkDirection) valid() bool {
-	return d == benchmarkUpload || d == benchmarkDownload || d == benchmarkBoth
 }
 
 func benchmarkHeader(direction benchmarkDirection) []byte {
@@ -333,8 +408,6 @@ func writeFull(writer io.Writer, data []byte) error {
 func configureBenchmarkTCP(conn benchmarkConnection) {
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetNoDelay(true)
-		_ = tcp.SetReadBuffer(1 << 20)
-		_ = tcp.SetWriteBuffer(1 << 20)
 	}
 }
 
@@ -344,15 +417,22 @@ func setBenchmarkDeadline(conn benchmarkConnection, deadline time.Time) {
 	}
 }
 
-func closeBenchmarkConnections(connections []net.Conn) {
-	for _, conn := range connections {
-		_ = conn.Close()
+func closeBenchmarkConnections(peers []benchmarkPeer) {
+	for _, peer := range peers {
+		_ = peer.conn.Close()
 	}
 }
 
 func cleanBenchmarkServerError(err error) error {
-	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, mux.ErrSessionClosed) {
+		return nil
+	}
+	if err.Error() == "stream closed" {
 		return nil
 	}
 	return err
+}
+
+func cleanBenchmarkSessionError(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, mux.ErrSessionClosed)
 }

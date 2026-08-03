@@ -53,6 +53,14 @@ func TestBenchmarkRejectsInvalidDirectionBeforeConnecting(t *testing.T) {
 	}
 }
 
+func TestBidirectionalBenchmarkLimitsStreamsPerDirection(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"benchmark", "--device", "test", "--direction", "both", "--connections", "17"}, strings.NewReader(""), &output, &output, false)
+	if err == nil || !strings.Contains(err.Error(), "at most 16") {
+		t.Fatalf("benchmark error = %v", err)
+	}
+}
+
 func TestBenchmarkServerRejectsTargetPort(t *testing.T) {
 	var output bytes.Buffer
 	err := run(context.Background(), []string{"server", "--benchmark", "--target-port", "1234"}, strings.NewReader(""), &output, &output, false)

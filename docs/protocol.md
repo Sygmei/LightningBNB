@@ -82,9 +82,10 @@ The session ID prevents accidental attachment to the wrong retained state but is
 The diagnostic `benchmark` client and a server running with `--benchmark` communicate through ordinary multiplexed streams. The server handles these streams in memory instead of dialing a TCP target. Each stream starts with:
 
 1. Eight ASCII bytes `LBNBBEN1`.
-2. One direction byte: `1` for upload, `2` for download, or `3` for bidirectional traffic, relative to the benchmark client.
+2. One direction byte: `1` for upload or `2` for download, relative to the benchmark client. Bidirectional tests open separate upload and download streams.
 3. One readiness byte with value `1`, returned by the benchmark server after it accepts the header.
 4. One start byte with value `1`, sent after every parallel stream returns readiness.
-5. Unframed payload until the benchmark client closes the stream.
+5. Unframed payload in 1 KiB blocks in the selected direction.
+6. Eight-byte big-endian cumulative acknowledgements in the reverse direction.
 
-Benchmark payload is generated and discarded in memory. Its counters exclude the eleven handshake bytes exchanged by each connection.
+Each sender limits unacknowledged benchmark payload to 4 KiB. TX counters advance only when cumulative acknowledgements arrive, while RX counters advance as payload is delivered. Benchmark payload is generated and discarded in memory; counters exclude handshake and acknowledgement bytes.

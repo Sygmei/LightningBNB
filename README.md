@@ -107,7 +107,9 @@ Then run the benchmark subcommand on the client computer:
 ./lightningbnb benchmark --device DEVICE_ID --duration 30s
 ```
 
-The benchmark uses four parallel multiplexed streams by default to keep flow-control windows populated. `--direction upload`, `--direction download`, and `--direction both` measure traffic relative to the benchmark client. Use `--connections N` to compare one through 32 streams, and `--stats-interval` to change the live reporting interval. BLE session resumption remains active during the run.
+The benchmark uses one stream per direction by default. `--direction upload`, `--direction download`, and `--direction both` measure traffic relative to the benchmark client. `--connections N` sets the number of streams per direction (up to 32 for one-way tests or 16 in each direction for bidirectional tests), and `--stats-interval` changes the live reporting interval. BLE session resumption remains active during the run.
+
+Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 4 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements without counting them as payload.
 
 The client prints one-second live rates followed by a final whole-run average, for example:
 

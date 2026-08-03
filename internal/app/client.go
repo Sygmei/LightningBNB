@@ -148,13 +148,12 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 			logger.Printf("connected to %s", deviceID)
 			if cfg.Benchmark != nil && benchmarkDone == nil {
 				benchmarkCfg := *cfg.Benchmark
-				benchmarkCfg.Address = listener.Addr().String()
 				benchmarkCfg.ErrorOutput = cfg.ErrorOutput
 				benchmarkCtx, cancel := context.WithCancel(ctx)
 				cancelBenchmark = cancel
 				done := make(chan error, 1)
 				benchmarkDone = done
-				go func() { done <- RunBenchmarkClient(benchmarkCtx, benchmarkCfg) }()
+				go func() { done <- RunMuxBenchmarkClient(benchmarkCtx, benchmarkCfg, muxSession) }()
 			}
 		}
 		_ = muxSession.Close()

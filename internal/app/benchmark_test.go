@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
 	"strings"
@@ -34,9 +35,17 @@ func TestBenchmarkUploadHandshakeAndCounters(t *testing.T) {
 	if err := writeFull(client, []byte{benchmarkStart}); err != nil {
 		t.Fatal(err)
 	}
-	payload := bytes.Repeat([]byte("benchmark"), 127)
+	payload := bytes.Repeat([]byte("benchmark"), benchmarkBlockSize/len("benchmark"))
+	payload = append(payload, make([]byte, benchmarkBlockSize-len(payload))...)
 	if err := writeFull(client, payload); err != nil {
 		t.Fatal(err)
+	}
+	var acknowledgement [8]byte
+	if _, err := io.ReadFull(client, acknowledgement[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.BigEndian.Uint64(acknowledgement[:]); got != uint64(len(payload)) {
+		t.Fatalf("acknowledgement = %d", got)
 	}
 	_ = client.Close()
 	if err := <-done; err != nil {
@@ -91,9 +100,16 @@ func TestBenchmarkResponderRunsInsideMuxSession(t *testing.T) {
 	if err := writeFull(stream, []byte{benchmarkStart}); err != nil {
 		t.Fatal(err)
 	}
-	payload := bytes.Repeat([]byte("mux-benchmark"), 100)
+	payload := bytes.Repeat([]byte("m"), benchmarkBlockSize)
 	if err := writeFull(stream, payload); err != nil {
 		t.Fatal(err)
+	}
+	var acknowledgement [8]byte
+	if _, err := io.ReadFull(stream, acknowledgement[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.BigEndian.Uint64(acknowledgement[:]); got != uint64(len(payload)) {
+		t.Fatalf("acknowledgement = %d", got)
 	}
 	if err := stream.CloseWrite(); err != nil {
 		t.Fatal(err)
@@ -114,40 +130,25 @@ func TestBenchmarkResponderRunsInsideMuxSession(t *testing.T) {
 
 func TestBenchmarkClientAndServerAllDirections(t *testing.T) {
 	serverCtx, cancelServer := context.WithCancel(context.Background())
-	defer cancelServer()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	clientWire, serverWire := net.Pipe()
+	clientMux := mux.NewClient(clientWire, 8)
+	serverMux := mux.NewServer(serverWire, 8)
+	defer clientMux.Close()
+	defer serverMux.Close()
 	serverErrors := make(chan error, 1)
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				if serverCtx.Err() != nil {
-					serverErrors <- nil
-				} else {
-					serverErrors <- err
-				}
-				return
-			}
-			go func() { _ = handleBenchmarkConnection(serverCtx, conn, &traffic.Counter{}) }()
-		}
-	}()
-	address := listener.Addr().String()
+	go func() { serverErrors <- ServeBenchmarkStreams(serverCtx, serverMux, &traffic.Counter{}, nil) }()
 
 	for _, direction := range []string{"upload", "download", "both"} {
 		t.Run(direction, func(t *testing.T) {
 			var diagnostics bytes.Buffer
-			if err := RunBenchmarkClient(context.Background(), BenchmarkClientConfig{
-				Address:       address,
+			if err := RunMuxBenchmarkClient(context.Background(), BenchmarkClientConfig{
 				Direction:     direction,
-				Duration:      50 * time.Millisecond,
-				DialTimeout:   time.Second,
+				Duration:      150 * time.Millisecond,
+				DialTimeout:   50 * time.Millisecond,
 				Connections:   1,
 				StatsInterval: time.Hour,
 				ErrorOutput:   &diagnostics,
-			}); err != nil {
+			}, clientMux); err != nil {
 				t.Fatal(err)
 			}
 			output := diagnostics.String()
@@ -164,9 +165,40 @@ func TestBenchmarkClientAndServerAllDirections(t *testing.T) {
 	}
 
 	cancelServer()
-	_ = listener.Close()
 	if err := <-serverErrors; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBenchmarkSenderCountsOnlyAcknowledgedBytes(t *testing.T) {
+	sender, receiver := net.Pipe()
+	defer receiver.Close()
+	var counter traffic.Counter
+	done := make(chan error, 1)
+	go func() { done <- pumpBenchmarkSend(sender, counter.AddTX) }()
+
+	payload := make([]byte, benchmarkOutstandingWindow)
+	if _, err := io.ReadFull(receiver, payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := counter.Snapshot().TX; got != 0 {
+		t.Fatalf("unacknowledged TX = %d", got)
+	}
+	var acknowledgement [8]byte
+	binary.BigEndian.PutUint64(acknowledgement[:], benchmarkOutstandingWindow)
+	if err := writeFull(receiver, acknowledgement[:]); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for counter.Snapshot().TX != benchmarkOutstandingWindow && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := counter.Snapshot().TX; got != benchmarkOutstandingWindow {
+		t.Fatalf("confirmed TX = %d", got)
+	}
+	_ = sender.Close()
+	if err := <-done; cleanBenchmarkServerError(err) != nil {
+		t.Fatalf("sender error = %v", err)
 	}
 }
 
