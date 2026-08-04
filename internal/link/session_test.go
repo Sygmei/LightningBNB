@@ -243,7 +243,7 @@ func TestSessionPipelinesPacketsBeforeAcknowledgement(t *testing.T) {
 
 func TestSessionBoundsUnacknowledgedTransmissionWindow(t *testing.T) {
 	const mtu = 244
-	flightWindow := (mtu - 9) * flightWindowPackets
+	flightWindow := (mtu - 9) * initialFlightWindowPackets
 	session, err := NewSession(Config{ReplayWindow: 2 * flightWindow})
 	if err != nil {
 		t.Fatal(err)
@@ -268,19 +268,84 @@ func TestSessionBoundsUnacknowledgedTransmissionWindow(t *testing.T) {
 		sent += len(packet) - 9
 		packets++
 	}
-	if sent != flightWindow || packets != flightWindowPackets {
+	if sent != flightWindow || packets != initialFlightWindowPackets {
 		session.mu.Unlock()
-		t.Fatalf("unacknowledged flight = %d bytes in %d packets, want %d bytes in %d packets", sent, packets, flightWindow, flightWindowPackets)
+		t.Fatalf("unacknowledged flight = %d bytes in %d packets, want %d bytes in %d packets", sent, packets, flightWindow, initialFlightWindowPackets)
 	}
 	if err := session.handleAckLocked(b, uint64(flightWindow), now); err != nil {
 		session.mu.Unlock()
 		t.Fatal(err)
+	}
+	if b.flightPackets != initialFlightWindowPackets+1 {
+		session.mu.Unlock()
+		t.Fatalf("flight window after clean ACK = %d packets", b.flightPackets)
 	}
 	next := session.nextPacketLocked(b, now)
 	session.mu.Unlock()
 	if len(next) != mtu || next[0] != packetData || binary.BigEndian.Uint64(next[1:9]) != uint64(flightWindow) {
 		t.Fatalf("first packet after ACK = %x", next)
 	}
+}
+
+func TestSessionAdaptsFlightWindowToACKsAndLoss(t *testing.T) {
+	session, err := NewSession(Config{ReplayWindow: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	session.txBuf = make([]byte, 4096)
+	session.txNext = uint64(len(session.txBuf))
+	b := &binding{
+		mtu:           20,
+		lastTX:        time.Now(),
+		flightPackets: initialFlightWindowPackets,
+	}
+	now := time.Now()
+	for range maxFlightWindowPackets - initialFlightWindowPackets + 5 {
+		b.sendNext = session.txBase + 1
+		if err := session.handleAckLocked(b, session.txBase+1, now); err != nil {
+			session.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	if b.flightPackets != maxFlightWindowPackets {
+		session.mu.Unlock()
+		t.Fatalf("maximum flight window = %d packets, want %d", b.flightPackets, maxFlightWindowPackets)
+	}
+	b.sendNext = session.txBase + 1
+	for range fastRetransmitACKs {
+		if err := session.handleAckLocked(b, session.txBase, now); err != nil {
+			session.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	if b.flightPackets != maxFlightWindowPackets/2 {
+		session.mu.Unlock()
+		t.Fatalf("flight window after loss = %d packets, want %d", b.flightPackets, maxFlightWindowPackets/2)
+	}
+	if session.stats.fastRetransmissions != 1 {
+		session.mu.Unlock()
+		t.Fatalf("fast retransmissions = %d", session.stats.fastRetransmissions)
+	}
+	b.flightPackets = maxFlightWindowPackets
+	b.sendNext = session.txBase + 1
+	b.retransmitAt = now.Add(-time.Millisecond)
+	if packet := session.nextPacketLocked(b, now); len(packet) == 0 || packet[0] != packetData {
+		session.mu.Unlock()
+		t.Fatalf("timeout retransmission packet = %x", packet)
+	}
+	if b.flightPackets != maxFlightWindowPackets/2 || session.stats.retransmissions != 1 {
+		session.mu.Unlock()
+		t.Fatalf("timeout backoff = %d packets, retransmissions = %d", b.flightPackets, session.stats.retransmissions)
+	}
+	b.flightPackets = initialFlightWindowPackets
+	reduceFlightWindow(b)
+	if b.flightPackets != initialFlightWindowPackets {
+		session.mu.Unlock()
+		t.Fatalf("minimum flight window = %d packets", b.flightPackets)
+	}
+	session.mu.Unlock()
+	_ = session.Close()
 }
 
 func TestSessionBatchesCumulativeAcknowledgements(t *testing.T) {

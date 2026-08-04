@@ -45,7 +45,7 @@ func formatTransportDebug(current, previous link.TransportSnapshot) string {
 		averageSend = sendDuration / time.Duration(sendCalls)
 	}
 	return fmt.Sprintf(
-		"mtu=%d data-tx=%dpkts/%s data-rx=%dpkts/%s ack-tx=%d ack-rx=%d rtx=%d fast-rtx=%d ooo=%d rejected=%d send-api-avg=%s send-api-max=%s outstanding=%s flight=%s rx-buffer=%s",
+		"mtu=%d data-tx=%dpkts/%s data-rx=%dpkts/%s ack-tx=%d ack-rx=%d rtx=%d fast-rtx=%d ooo=%d rejected=%d send-api-avg=%s send-api-max=%s outstanding=%s flight=%s cwnd=%dpkts rx-buffer=%s",
 		current.PacketMTU,
 		delta(current.DataTXPackets, previous.DataTXPackets),
 		formatBytes(float64(delta(current.DataTXBytes, previous.DataTXBytes))),
@@ -61,6 +61,7 @@ func formatTransportDebug(current, previous link.TransportSnapshot) string {
 		current.MaxSendDuration.Round(time.Microsecond),
 		formatBytes(float64(current.OutstandingBytes)),
 		formatBytes(float64(current.FlightBytes)),
+		current.FlightLimitPackets,
 		formatBytes(float64(current.BufferedRXBytes)),
 	)
 }

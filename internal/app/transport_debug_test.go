@@ -29,6 +29,7 @@ func TestFormatTransportDebugReportsIntervalAndQueueState(t *testing.T) {
 		MaxSendDuration:       8 * time.Millisecond,
 		OutstandingBytes:      1880,
 		FlightBytes:           1880,
+		FlightLimitPackets:    16,
 		PacketMTU:             244,
 	}
 
@@ -45,6 +46,7 @@ func TestFormatTransportDebugReportsIntervalAndQueueState(t *testing.T) {
 		"send-api-max=8ms",
 		"outstanding=1.8 KiB",
 		"flight=1.8 KiB",
+		"cwnd=16pkts",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("transport output does not contain %q: %q", want, got)

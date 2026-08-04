@@ -21,6 +21,7 @@ type TransportSnapshot struct {
 	MaxSendDuration       time.Duration
 	OutstandingBytes      uint64
 	FlightBytes           uint64
+	FlightLimitPackets    int
 	BufferedRXBytes       uint64
 	PacketMTU             int
 }
@@ -64,6 +65,7 @@ func (s *Session) TransportSnapshot() TransportSnapshot {
 	}
 	if s.current != nil {
 		snapshot.PacketMTU = s.current.mtu
+		snapshot.FlightLimitPackets = max(initialFlightWindowPackets, s.current.flightPackets)
 		if s.current.sendNext > s.txBase {
 			snapshot.FlightBytes = s.current.sendNext - s.txBase
 		}

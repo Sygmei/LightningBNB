@@ -19,16 +19,17 @@ const (
 	DefaultResumeTimeout  = 60 * time.Second
 	DefaultMaxConnections = 32
 
-	retransmitInterval  = time.Second
-	heartbeatInterval   = 5 * time.Second
-	heartbeatTimeout    = 15 * time.Second
-	sendTimeout         = 5 * time.Second
-	liveWriteWindow     = 16 << 10
-	fastRetransmitACKs  = 3
-	ackBatchPackets     = 8
-	flightWindowPackets = ackBatchPackets
-	ackMaxDelay         = 40 * time.Millisecond
-	sendLoopInterval    = 10 * time.Millisecond
+	retransmitInterval         = time.Second
+	heartbeatInterval          = 5 * time.Second
+	heartbeatTimeout           = 15 * time.Second
+	sendTimeout                = 5 * time.Second
+	liveWriteWindow            = 16 << 10
+	fastRetransmitACKs         = 3
+	ackBatchPackets            = 8
+	initialFlightWindowPackets = ackBatchPackets
+	maxFlightWindowPackets     = 32
+	ackMaxDelay                = 40 * time.Millisecond
+	sendLoopInterval           = 10 * time.Millisecond
 )
 
 var (
@@ -62,15 +63,16 @@ func (cfg Config) normalized() Config {
 }
 
 type binding struct {
-	conn         PacketConn
-	gen          uint64
-	mtu          int
-	cancel       context.CancelFunc
-	lastRX       time.Time
-	lastTX       time.Time
-	sendNext     uint64
-	retransmitAt time.Time
-	duplicateACK int
+	conn          PacketConn
+	gen           uint64
+	mtu           int
+	cancel        context.CancelFunc
+	lastRX        time.Time
+	lastTX        time.Time
+	sendNext      uint64
+	retransmitAt  time.Time
+	duplicateACK  int
+	flightPackets int
 }
 
 // Session is a reliable, ordered, resumable byte stream over replaceable BLE
@@ -264,13 +266,14 @@ func (s *Session) attach(conn PacketConn, mtu int) error {
 	old := s.current
 	s.bindGen++
 	b := &binding{
-		conn:     conn,
-		gen:      s.bindGen,
-		mtu:      min(normalizeMTU(conn.MTU()), normalizeMTU(mtu)),
-		cancel:   cancel,
-		lastRX:   now,
-		lastTX:   now,
-		sendNext: s.txBase,
+		conn:          conn,
+		gen:           s.bindGen,
+		mtu:           min(normalizeMTU(conn.MTU()), normalizeMTU(mtu)),
+		cancel:        cancel,
+		lastRX:        now,
+		lastTX:        now,
+		sendNext:      s.txBase,
+		flightPackets: initialFlightWindowPackets,
 	}
 	// Pending packets were not cumulatively acknowledged. A replacement binding
 	// can use a different MTU and therefore different fragment boundaries, so
@@ -431,7 +434,7 @@ func (s *Session) acceptDataLocked(seq uint64, payload []byte) (advancedPackets 
 	}
 
 	if seq > s.rxNext {
-		if len(s.rxPending) >= flightWindowPackets {
+		if len(s.rxPending) >= maxFlightWindowPackets {
 			return 0, false, true, nil
 		}
 		if s.rxPending == nil {
@@ -554,17 +557,22 @@ func (s *Session) nextPacketLocked(b *binding, now time.Time) []byte {
 		b.sendNext = s.txBase
 		b.retransmitAt = now.Add(retransmitInterval)
 		b.duplicateACK = 0
+		reduceFlightWindow(b)
 		s.stats.retransmissions++
 	}
 	payloadSize := b.mtu - 9
 	if payloadSize < 1 {
 		payloadSize = 1
 	}
-	// Stop after one ACK batch so GATT traffic in the reverse direction gets
-	// airtime. Letting a complete 16 KiB live buffer enter CoreBluetooth at once
-	// can starve the peer's cumulative ACKs and turn the one-second recovery
-	// timer into the effective flow-control mechanism.
-	flightWindow := uint64(payloadSize * flightWindowPackets)
+	// Start with one ACK batch, then grow only while cumulative ACKs advance.
+	// The bounded adaptive window hides ACK latency without letting a complete
+	// 16 KiB live buffer enter CoreBluetooth and starve reverse control traffic.
+	flightPackets := b.flightPackets
+	if flightPackets < initialFlightWindowPackets {
+		flightPackets = initialFlightWindowPackets
+		b.flightPackets = flightPackets
+	}
+	flightWindow := uint64(payloadSize * flightPackets)
 	windowEnd := min(s.txNext, s.txBase+flightWindow)
 	if b.sendNext < windowEnd {
 		payloadSize = min(payloadSize, int(windowEnd-b.sendNext))
@@ -643,6 +651,11 @@ func (s *Session) handleAckLocked(b *binding, expected uint64, now time.Time) er
 	}
 	if s.txBase > previousBase {
 		b.duplicateACK = 0
+		if b.flightPackets < initialFlightWindowPackets {
+			b.flightPackets = initialFlightWindowPackets
+		} else if b.flightPackets < maxFlightWindowPackets {
+			b.flightPackets++
+		}
 		if b.sendNext < s.txBase {
 			b.sendNext = s.txBase
 		}
@@ -659,11 +672,20 @@ func (s *Session) handleAckLocked(b *binding, expected uint64, now time.Time) er
 			b.sendNext = s.txBase
 			b.retransmitAt = now.Add(retransmitInterval)
 			b.duplicateACK = 0
+			reduceFlightWindow(b)
 			s.stats.fastRetransmissions++
 			s.signalLocked()
 		}
 	}
 	return nil
+}
+
+func reduceFlightWindow(b *binding) {
+	flightPackets := b.flightPackets
+	if flightPackets < initialFlightWindowPackets {
+		flightPackets = initialFlightWindowPackets
+	}
+	b.flightPackets = max(initialFlightWindowPackets, flightPackets/2)
 }
 
 func (s *Session) negotiateLocked(peer Config) {
