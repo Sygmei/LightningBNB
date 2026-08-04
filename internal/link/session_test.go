@@ -26,14 +26,16 @@ type fakePacketConn struct {
 	mu            sync.Mutex
 	dropType      map[byte]int
 	duplicateType map[byte]int
+	reorderType   map[byte]int
+	heldType      map[byte][]byte
 }
 
 func fakePacketPair(mtuA, mtuB int) (*fakePacketConn, *fakePacketConn) {
 	wire := &fakeWire{done: make(chan struct{})}
 	aIn := make(chan []byte, 64)
 	bIn := make(chan []byte, 64)
-	a := &fakePacketConn{wire: wire, in: aIn, out: bIn, recv: make(chan []byte, 64), mtu: mtuA, dropType: make(map[byte]int), duplicateType: make(map[byte]int)}
-	b := &fakePacketConn{wire: wire, in: bIn, out: aIn, recv: make(chan []byte, 64), mtu: mtuB, dropType: make(map[byte]int), duplicateType: make(map[byte]int)}
+	a := &fakePacketConn{wire: wire, in: aIn, out: bIn, recv: make(chan []byte, 64), mtu: mtuA, dropType: make(map[byte]int), duplicateType: make(map[byte]int), reorderType: make(map[byte]int), heldType: make(map[byte][]byte)}
+	b := &fakePacketConn{wire: wire, in: bIn, out: aIn, recv: make(chan []byte, 64), mtu: mtuB, dropType: make(map[byte]int), duplicateType: make(map[byte]int), reorderType: make(map[byte]int), heldType: make(map[byte][]byte)}
 	go a.forward()
 	go b.forward()
 	return a, b
@@ -67,6 +69,17 @@ func (c *fakePacketConn) Send(ctx context.Context, packet []byte) error {
 	if duplicate {
 		c.duplicateType[packet[0]]--
 	}
+	var held []byte
+	if len(packet) > 0 && c.reorderType[packet[0]] > 0 {
+		c.reorderType[packet[0]]--
+		c.heldType[packet[0]] = copyOfPacket
+		c.mu.Unlock()
+		return nil
+	}
+	if len(packet) > 0 {
+		held = c.heldType[packet[0]]
+		delete(c.heldType, packet[0])
+	}
 	c.mu.Unlock()
 	select {
 	case <-ctx.Done():
@@ -74,6 +87,15 @@ func (c *fakePacketConn) Send(ctx context.Context, packet []byte) error {
 	case <-c.wire.done:
 		return io.ErrClosedPipe
 	case c.out <- copyOfPacket:
+	}
+	if held != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.wire.done:
+			return io.ErrClosedPipe
+		case c.out <- held:
+		}
 	}
 	if duplicate {
 		select {
@@ -103,6 +125,12 @@ func (c *fakePacketConn) dropNext(packetType byte) {
 func (c *fakePacketConn) duplicateNext(packetType byte) {
 	c.mu.Lock()
 	c.duplicateType[packetType]++
+	c.mu.Unlock()
+}
+
+func (c *fakePacketConn) reorderNextPair(packetType byte) {
+	c.mu.Lock()
+	c.reorderType[packetType]++
 	c.mu.Unlock()
 }
 
@@ -158,6 +186,32 @@ func TestSessionTransfersAndRetransmits(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSessionTransfersAcrossReorderedPackets(t *testing.T) {
+	cfg := Config{ResumeTimeout: 2 * time.Second, ReplayWindow: 1024, MaxConnections: 8}
+	client, server, clientConn, _ := newSessionPair(t, cfg)
+	defer client.Close()
+	defer server.Close()
+
+	clientConn.reorderNextPair(packetData)
+	want := bytes.Repeat([]byte("reordered payload "), 8)
+	if _, err := client.Write(want); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if stats := server.TransportSnapshot(); stats.OutOfOrderDataPackets == 0 || stats.RejectedDataPackets != 0 {
+		t.Fatalf("server transport stats = %+v", stats)
 	}
 }
 
@@ -266,6 +320,81 @@ func TestSessionBatchesCumulativeAcknowledgements(t *testing.T) {
 	if len(ack) != 9 || ack[0] != packetAck || binary.BigEndian.Uint64(ack[1:]) != ackBatchPackets {
 		t.Fatalf("batched ACK = %x", ack)
 	}
+}
+
+func TestSessionBuffersOutOfOrderDataUntilGapArrives(t *testing.T) {
+	session, err := NewSession(Config{ReplayWindow: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	b := &binding{mtu: 20, lastRX: now, lastTX: now}
+	session.mu.Lock()
+	session.current = b
+	session.mu.Unlock()
+
+	packet := func(sequence uint64, payload string) []byte {
+		encoded := make([]byte, 9+len(payload))
+		encoded[0] = packetData
+		binary.BigEndian.PutUint64(encoded[1:9], sequence)
+		copy(encoded[9:], payload)
+		return encoded
+	}
+
+	if err := session.handlePacket(b, packet(3, "def")); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := session.TransportSnapshot()
+	if snapshot.OutOfOrderDataPackets != 1 || snapshot.RejectedDataPackets != 0 || snapshot.BufferedRXBytes != 3 {
+		t.Fatalf("stats after gap = %+v", snapshot)
+	}
+	session.mu.Lock()
+	gapACK := session.nextPacketLocked(b, now)
+	session.mu.Unlock()
+	if len(gapACK) != 9 || gapACK[0] != packetAck || binary.BigEndian.Uint64(gapACK[1:]) != 0 {
+		t.Fatalf("gap ACK = %x", gapACK)
+	}
+
+	if err := session.handlePacket(b, packet(0, "abc")); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 6)
+	if _, err := io.ReadFull(session, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "abcdef" {
+		t.Fatalf("reordered payload = %q", got)
+	}
+	snapshot = session.TransportSnapshot()
+	if snapshot.DataRXBytes != 6 || snapshot.RejectedDataPackets != 0 || snapshot.BufferedRXBytes != 0 {
+		t.Fatalf("stats after gap recovery = %+v", snapshot)
+	}
+	session.mu.Lock()
+	recoveryACK := session.nextPacketLocked(b, time.Now().Add(2*ackMaxDelay))
+	session.current = nil
+	session.mu.Unlock()
+	_ = session.Close()
+	if len(recoveryACK) != 9 || recoveryACK[0] != packetAck || binary.BigEndian.Uint64(recoveryACK[1:]) != 6 {
+		t.Fatalf("recovery ACK = %x", recoveryACK)
+	}
+}
+
+func TestSessionRejectsOverlappingOutOfOrderData(t *testing.T) {
+	session, err := NewSession(Config{ReplayWindow: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	if _, buffered, rejected, err := session.acceptDataLocked(10, []byte("abcd")); err != nil || !buffered || rejected {
+		session.mu.Unlock()
+		t.Fatalf("first packet = buffered %v, rejected %v, err %v", buffered, rejected, err)
+	}
+	if _, buffered, rejected, err := session.acceptDataLocked(12, []byte("efgh")); err != nil || buffered || !rejected {
+		session.mu.Unlock()
+		t.Fatalf("overlap = buffered %v, rejected %v, err %v", buffered, rejected, err)
+	}
+	session.mu.Unlock()
+	_ = session.Close()
 }
 
 func TestSessionAcknowledgementDeadline(t *testing.T) {

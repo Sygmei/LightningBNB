@@ -86,6 +86,12 @@ type Session struct {
 	txBuf  []byte
 	rxNext uint64
 	rxBuf  []byte
+	// rxPending retains valid DATA packets that arrived ahead of rxNext. Some
+	// desktop GATT stacks deliver write callbacks concurrently even though ATT
+	// writes were issued in order. Keeping one bounded reordering window avoids
+	// turning that callback scheduling into a retransmission storm.
+	rxPending      map[uint64][]byte
+	rxPendingBytes int
 
 	current    *binding
 	bindGen    uint64
@@ -266,6 +272,11 @@ func (s *Session) attach(conn PacketConn, mtu int) error {
 		lastTX:   now,
 		sendNext: s.txBase,
 	}
+	// Pending packets were not cumulatively acknowledged. A replacement binding
+	// can use a different MTU and therefore different fragment boundaries, so
+	// replay them from the sender instead of retaining incompatible fragments.
+	s.rxPending = nil
+	s.rxPendingBytes = 0
 	s.current = b
 	s.detachedAt = time.Time{}
 	if s.ackDirty {
@@ -318,27 +329,22 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		}
 		seq := binary.BigEndian.Uint64(packet[1:9])
 		payload := packet[9:]
-		accepted := seq == s.rxNext && len(s.rxBuf)+len(payload) <= s.config.ReplayWindow
 		s.stats.dataRXPackets++
-		if accepted {
-			if uint64(len(payload)) > ^uint64(0)-s.rxNext {
-				return ErrSequenceExhausted
-			}
-			s.rxBuf = append(s.rxBuf, payload...)
-			s.rxNext += uint64(len(payload))
-			s.stats.dataRXBytes += uint64(len(payload))
-			s.signalLocked()
-		} else {
+		advancedPackets, buffered, rejected, err := s.acceptDataLocked(seq, payload)
+		if err != nil {
+			return err
+		}
+		if rejected {
 			s.stats.rejectedDataPackets++
 		}
 		s.ackDirty = true
-		if accepted {
-			s.ackPackets++
+		if advancedPackets > 0 {
+			s.ackPackets += advancedPackets
 			if s.ackDeadline.IsZero() {
 				s.ackDeadline = now.Add(ackMaxDelay)
 			}
-		} else {
-			// Duplicates, gaps, and receive-window pressure need an immediate
+		} else if buffered || rejected {
+			// Gaps, duplicates, overlaps, and receive-window pressure need an immediate
 			// cumulative ACK so the sender can restart at the expected offset.
 			s.ackPackets = ackBatchPackets
 			s.ackDeadline = now
@@ -398,6 +404,66 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		return ErrHandshake
 	}
 	return nil
+}
+
+// acceptDataLocked adds one unique packet to the bounded receive window. It
+// reports how many packet fragments made the contiguous receive offset advance,
+// whether this packet was retained ahead of a gap, and whether it was rejected.
+func (s *Session) acceptDataLocked(seq uint64, payload []byte) (advancedPackets int, buffered, rejected bool, err error) {
+	if uint64(len(payload)) > ^uint64(0)-seq {
+		return 0, false, false, ErrSequenceExhausted
+	}
+	end := seq + uint64(len(payload))
+	if seq < s.rxNext {
+		return 0, false, true, nil
+	}
+	if end-s.rxNext > uint64(s.config.ReplayWindow) {
+		return 0, false, true, nil
+	}
+	if len(s.rxBuf)+s.rxPendingBytes+len(payload) > s.config.ReplayWindow {
+		return 0, false, true, nil
+	}
+	for pendingSeq, pendingPayload := range s.rxPending {
+		pendingEnd := pendingSeq + uint64(len(pendingPayload))
+		if seq < pendingEnd && pendingSeq < end {
+			return 0, false, true, nil
+		}
+	}
+
+	if seq > s.rxNext {
+		if len(s.rxPending) >= flightWindowPackets {
+			return 0, false, true, nil
+		}
+		if s.rxPending == nil {
+			s.rxPending = make(map[uint64][]byte)
+		}
+		s.rxPending[seq] = append([]byte(nil), payload...)
+		s.rxPendingBytes += len(payload)
+		s.stats.dataRXBytes += uint64(len(payload))
+		s.stats.outOfOrderDataPackets++
+		return 0, true, false, nil
+	}
+
+	s.rxBuf = append(s.rxBuf, payload...)
+	s.rxNext = end
+	s.stats.dataRXBytes += uint64(len(payload))
+	advancedPackets = 1
+	for {
+		pending, ok := s.rxPending[s.rxNext]
+		if !ok {
+			break
+		}
+		delete(s.rxPending, s.rxNext)
+		s.rxPendingBytes -= len(pending)
+		s.rxBuf = append(s.rxBuf, pending...)
+		s.rxNext += uint64(len(pending))
+		advancedPackets++
+	}
+	if len(s.rxPending) == 0 {
+		s.rxPending = nil
+	}
+	s.signalLocked()
+	return advancedPackets, false, false, nil
 }
 
 func (s *Session) sendLoop(ctx context.Context, b *binding) {

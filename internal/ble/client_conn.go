@@ -11,11 +11,12 @@ import (
 )
 
 type clientPacketConn struct {
-	id     string
-	device bluetooth.Device
-	rx     bluetooth.DeviceCharacteristic
-	tx     bluetooth.DeviceCharacteristic
-	mtu    int
+	id       string
+	serverID string
+	device   bluetooth.Device
+	rx       bluetooth.DeviceCharacteristic
+	tx       bluetooth.DeviceCharacteristic
+	mtu      int
 
 	incoming chan []byte
 	receive  chan []byte
@@ -26,9 +27,10 @@ type clientPacketConn struct {
 	onClose  func()
 }
 
-func newClientPacketConn(id string, device bluetooth.Device, rx, tx bluetooth.DeviceCharacteristic) *clientPacketConn {
+func newClientPacketConn(id, serverID string, device bluetooth.Device, rx, tx bluetooth.DeviceCharacteristic) *clientPacketConn {
 	return &clientPacketConn{
 		id:       id,
+		serverID: serverID,
 		device:   device,
 		rx:       rx,
 		tx:       tx,

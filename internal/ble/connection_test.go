@@ -3,9 +3,23 @@ package ble
 import (
 	"runtime"
 	"testing"
+	"time"
 
 	"tinygo.org/x/bluetooth"
 )
+
+func TestApplicationConnectDeadlinesOutliveDarwinBackendCleanup(t *testing.T) {
+	// tinygo.org/x/bluetooth uses a ten-second Connect timeout and this
+	// repository's Darwin patch allows two more seconds for asynchronous
+	// cancellation. Application deadlines must not abandon that call first.
+	const backendWorstCase = 12 * time.Second
+	if identityProbeTimeout <= backendWorstCase {
+		t.Fatalf("identity probe timeout %s does not outlive backend cleanup", identityProbeTimeout)
+	}
+	if connectAttemptTimeout <= backendWorstCase {
+		t.Fatalf("connect attempt timeout %s does not outlive backend cleanup", connectAttemptTimeout)
+	}
+}
 
 func TestPendingConnectionCanOnlyBeTakenOnce(t *testing.T) {
 	native := bluetooth.Device{}
@@ -30,5 +44,15 @@ func TestValidateConnectedDeviceRejectsEmptyBackendResult(t *testing.T) {
 	}
 	if err := validateConnectedDevice(bluetooth.Device{Address: address}, address); err != nil {
 		t.Fatalf("connected device was rejected: %v", err)
+	}
+}
+
+func TestConnectedServerIDUsesTransportIdentity(t *testing.T) {
+	const id = "lbnb:3f09e76b-5583-4888-a4cc-f6d64e180d58"
+	if got := ConnectedServerID(&clientPacketConn{serverID: id}); got != id {
+		t.Fatalf("connected server ID = %q", got)
+	}
+	if got := ConnectedServerID(nil); got != "" {
+		t.Fatalf("nil transport server ID = %q", got)
 	}
 }

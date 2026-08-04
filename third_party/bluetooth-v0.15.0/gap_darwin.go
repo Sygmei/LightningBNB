@@ -11,6 +11,11 @@ import (
 // default connection timeout
 const defaultConnectionTimeout time.Duration = 10 * time.Second
 
+// CoreBluetooth cancellation is asynchronous. Bound the time spent waiting
+// for its disconnect callback so a missing callback cannot leave Connect
+// running forever and interfere with the next attempt for the same peripheral.
+const connectCancellationTimeout = 2 * time.Second
+
 // Address contains a Bluetooth address which on macOS is a UUID.
 type Address struct {
 	// UUID since this is macOS.
@@ -122,14 +127,16 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 	}
 
 	id := prphs[0].Identifier().String()
-	prphCh := make(chan cbgo.Peripheral)
+	// Delegate callbacks must never block if cancellation and callback delivery
+	// race. The single connection result is all this call needs.
+	prphCh := make(chan cbgo.Peripheral, 1)
 
 	a.connectMap.Store(id, prphCh)
-	defer a.connectMap.Delete(id)
+	defer clearConnectAttempt(a, id, prphCh)
 
 	a.cm.Connect(prphs[0], nil)
 	timeoutTimer := time.NewTimer(timeout)
-	var connectionError error
+	defer timeoutTimer.Stop()
 
 	for {
 		// wait on channel for connect
@@ -138,7 +145,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 
 			// check if we have received a disconnected peripheral
 			if p.State() == cbgo.PeripheralStateDisconnected {
-				return Device{}, connectionError
+				return Device{}, errors.New("connection canceled before completion")
 			}
 
 			d := Device{
@@ -160,17 +167,30 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 			return d, nil
 
 		case <-timeoutTimer.C:
-			// we need to cancel the connection if we have timed out ourselves
+			connectionError := errors.New("timeout on Connect")
 			a.cm.CancelConnect(prphs[0])
 
-			// record an error to use when the disconnect comes through later.
-			connectionError = errors.New("timeout on Connect")
-
-			// we are not ready to return yet, we need to wait for the disconnect event to come through
-			// so continue on from this case and wait for something to show up on prphCh
-			continue
+			// Give CoreBluetooth a bounded opportunity to finish cancellation.
+			// The previous implementation waited forever here, allowing an
+			// abandoned identity probe to race with the next real connection.
+			cancelTimer := time.NewTimer(connectCancellationTimeout)
+			select {
+			case p := <-prphCh:
+				if !cancelTimer.Stop() {
+					<-cancelTimer.C
+				}
+				if p.State() != cbgo.PeripheralStateDisconnected {
+					a.cm.CancelConnect(p)
+				}
+			case <-cancelTimer.C:
+			}
+			return Device{}, connectionError
 		}
 	}
+}
+
+func clearConnectAttempt(a *Adapter, id string, attempt chan cbgo.Peripheral) {
+	a.connectMap.CompareAndDelete(id, attempt)
 }
 
 // Disconnect from the BLE device. This method is non-blocking and does not

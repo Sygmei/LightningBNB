@@ -154,12 +154,18 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				logger.Printf("resolved platform device %s to stable server ID %s", device.ID, device.ServerID)
 				deviceID = device.ServerID
 			}
-			connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			connectCtx, cancel := context.WithTimeout(ctx, ble.ConnectAttemptTimeout)
 			packetConn, err := adapter.Connect(connectCtx, device)
-			if err == nil {
-				err = linkSession.BindClient(connectCtx, packetConn)
-			}
 			cancel()
+			if err == nil {
+				if connectedID := ble.ConnectedServerID(packetConn); connectedID != "" && deviceID != connectedID {
+					logger.Printf("resolved platform device %s to stable server ID %s", device.ID, connectedID)
+					deviceID = connectedID
+				}
+				handshakeCtx, cancelHandshake := context.WithTimeout(ctx, 15*time.Second)
+				err = linkSession.BindClient(handshakeCtx, packetConn)
+				cancelHandshake()
+			}
 			if err != nil {
 				if packetConn != nil {
 					_ = packetConn.Close()
@@ -212,7 +218,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 }
 
 func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Duration, input io.Reader, output io.Writer) (ble.Device, error) {
-	devices, err := adapter.Scan(ctx, timeout)
+	devices, err := adapter.Discover(ctx, timeout)
 	if err != nil {
 		return ble.Device{}, err
 	}

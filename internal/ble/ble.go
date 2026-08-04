@@ -20,9 +20,15 @@ const (
 	IdentityUUIDString = "13f0b6a3-4746-4c42-8e2f-1f62e4a0b1a0"
 	TestCompanyID      = 0xffff
 
-	maxPacketMTU       = 244
-	probeSettlingDelay = 250 * time.Millisecond
+	maxPacketMTU          = 244
+	probeSettlingDelay    = 250 * time.Millisecond
+	identityProbeTimeout  = 15 * time.Second
+	connectAttemptTimeout = 15 * time.Second
 )
+
+// ConnectAttemptTimeout is long enough for the platform backend to time out
+// and finish its bounded cancellation before an application-level retry.
+const ConnectAttemptTimeout = connectAttemptTimeout
 
 var (
 	ServiceUUID  = mustUUID(ServiceUUIDString)
@@ -104,7 +110,11 @@ func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, e
 		return nil, err
 	}
 	for index := range devices {
-		identifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		// This deadline must outlive the Darwin backend's 10-second connection
+		// timeout and bounded cancellation cleanup. Returning sooner abandons a
+		// live CoreBluetooth Connect call that can consume the next attempt's
+		// callback for the same peripheral.
+		identifyCtx, cancel := context.WithTimeout(ctx, identityProbeTimeout)
 		serverID, identifyErr := a.identify(identifyCtx, devices[index])
 		cancel()
 		devices[index].identityProbedAt = time.Now()
@@ -113,6 +123,13 @@ func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, e
 		}
 	}
 	return devices, nil
+}
+
+// Discover returns LightningBNB advertisements without opening a temporary
+// GATT connection to read each stable server identity. Interactive selection
+// uses this path so the selected server is connected exactly once.
+func (a *Adapter) Discover(ctx context.Context, duration time.Duration) ([]Device, error) {
+	return a.scan(ctx, duration, true)
 }
 
 func (a *Adapter) ScanAll(ctx context.Context, duration time.Duration) ([]Device, error) {
@@ -434,15 +451,20 @@ func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, 
 		_ = native.Disconnect()
 		return nil, errors.New("LightningBNB service was not found on the selected device")
 	}
-	characteristics, err := services[0].DiscoverCharacteristics([]bluetooth.UUID{RXUUID, TXUUID})
+	// Discover all characteristics in one request. Besides allowing older
+	// servers without the identity characteristic, this keeps the Darwin
+	// backend's characteristic callback cache intact for TX notifications.
+	characteristics, err := services[0].DiscoverCharacteristics(nil)
 	if err != nil {
 		_ = native.Disconnect()
 		return nil, fmt.Errorf("discover LightningBNB characteristics: %w", err)
 	}
 	var rx bluetooth.DeviceCharacteristic
 	var tx bluetooth.DeviceCharacteristic
+	var identity bluetooth.DeviceCharacteristic
 	haveRX := false
 	haveTX := false
+	haveIdentity := false
 	for _, characteristic := range characteristics {
 		switch characteristic.UUID() {
 		case RXUUID:
@@ -451,13 +473,23 @@ func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, 
 		case TXUUID:
 			tx = characteristic
 			haveTX = true
+		case IdentityUUID:
+			identity = characteristic
+			haveIdentity = true
 		}
 	}
 	if !haveRX || !haveTX {
 		_ = native.Disconnect()
 		return nil, errors.New("selected device does not expose the complete LightningBNB transport")
 	}
-	conn := newClientPacketConn(device.ID, native, rx, tx)
+	serverID := ""
+	if haveIdentity {
+		var id ServerID
+		if n, readErr := identity.Read(id[:]); readErr == nil && n == len(id) {
+			serverID = id.String()
+		}
+	}
+	conn := newClientPacketConn(device.ID, serverID, native, rx, tx)
 	a.connectionsMu.Lock()
 	a.connections[device.ID] = conn
 	a.connectionsMu.Unlock()
@@ -473,6 +505,15 @@ func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, 
 		return nil, fmt.Errorf("subscribe to LightningBNB transport: %w", err)
 	}
 	return conn, nil
+}
+
+// ConnectedServerID returns the stable identity read on the transport's GATT
+// connection, or an empty string for older servers and non-client transports.
+func ConnectedServerID(conn link.PacketConn) string {
+	if client, ok := conn.(*clientPacketConn); ok {
+		return client.serverID
+	}
+	return ""
 }
 
 func (a *Adapter) connectionChanged(device bluetooth.Device, connected bool) {
