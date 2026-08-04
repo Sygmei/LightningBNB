@@ -202,6 +202,39 @@ func TestBenchmarkSenderCountsOnlyAcknowledgedBytes(t *testing.T) {
 	}
 }
 
+func TestBenchmarkSenderCountsACKBeforeWindowFills(t *testing.T) {
+	sender, receiver := net.Pipe()
+	defer receiver.Close()
+	var counter traffic.Counter
+	done := make(chan error, 1)
+	go func() { done <- pumpBenchmarkSend(sender, counter.AddTX) }()
+
+	payload := make([]byte, benchmarkBlockSize)
+	if _, err := io.ReadFull(receiver, payload); err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgement [8]byte
+	binary.BigEndian.PutUint64(acknowledgement[:], benchmarkBlockSize)
+	if err := writeFull(receiver, acknowledgement[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Do not consume a second block: the sender must process this ACK while its
+	// next payload write is blocked, not only after filling the 256 KiB window.
+	deadline := time.Now().Add(time.Second)
+	for counter.Snapshot().TX != benchmarkBlockSize && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := counter.Snapshot().TX; got != benchmarkBlockSize {
+		t.Fatalf("confirmed TX before window filled = %d", got)
+	}
+
+	_ = receiver.Close()
+	if err := <-done; cleanBenchmarkServerError(err) != nil {
+		t.Fatalf("sender error = %v", err)
+	}
+}
+
 func TestParseBenchmarkDirection(t *testing.T) {
 	for input, want := range map[string]benchmarkDirection{
 		"upload":        benchmarkUpload,

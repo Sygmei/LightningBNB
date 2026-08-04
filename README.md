@@ -28,6 +28,11 @@ cd LightningBNB
 go build -o lightningbnb ./cmd/lightningbnb
 ```
 
+The checked-in `third_party/bluetooth-v0.15.0` directory is intentional. It is
+the pinned upstream v0.15.0 source plus a documented macOS readiness-callback
+fix; the root `go.mod` uses it through a local `replace`, so native builds are
+reproducible without silently picking up an unstable Bluetooth API revision.
+
 Build on the operating system where the binary will run:
 
 - Linux: install BlueZ and ensure the user can access the system D-Bus Bluetooth interfaces. On Debian/Ubuntu, start with `sudo apt install bluez` and verify `bluetoothctl show` works. `--prevent-sleep` additionally requires systemd-logind and permission to acquire its sleep and idle inhibitor locks.
@@ -145,7 +150,7 @@ When stderr is an interactive terminal, live traffic statistics appear in an in-
 
 When compression is negotiated, the dashboard adds TX and RX rows comparing the original DATA payload totals with their encoded compressed totals and the resulting percentage saved. These compression totals include the one-byte DATA encoding marker, but exclude multiplexing, link, GATT, Bluetooth, and retransmission overhead.
 
-Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 256 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements every 16 KiB without counting them as payload.
+Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 256 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements every 16 KiB without counting them as payload. Because the two dashboards use independent one-second sampling clocks, a receiver can briefly show a higher peak or lead its sender by the still-unconfirmed portion of that window; compare the whole-run average for throughput.
 
 The benchmark also prints a final whole-run result; redirected logs retain that line along with the interval reports:
 

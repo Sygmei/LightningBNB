@@ -255,50 +255,85 @@ func handleBenchmarkConnection(ctx context.Context, conn benchmarkConnection, co
 	return cleanBenchmarkServerError(pumpBenchmarkSend(conn, counter.AddTX))
 }
 
-type benchmarkACK struct {
-	total uint64
-	err   error
-}
-
 // pumpBenchmarkSend maintains a small application window and counts only bytes
 // cumulatively acknowledged by the receiver. This prevents socket/mux buffers
 // from being reported as Bluetooth throughput.
 func pumpBenchmarkSend(conn benchmarkConnection, addConfirmed func(uint64)) error {
 	payload := make([]byte, benchmarkBlockSize)
 	fillBenchmarkPayload(payload)
-	acks := make(chan benchmarkACK, benchmarkOutstandingWindow/benchmarkBlockSize+2)
+
+	type sendState struct {
+		sync.Mutex
+		sent      uint64
+		confirmed uint64
+		err       error
+	}
+	state := sendState{}
+	wake := make(chan struct{}, 1)
+	signal := func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+
+	// Apply acknowledgements in the reader goroutine instead of waiting for the
+	// entire outstanding window to fill. In particular, macOS can block a BLE
+	// write while CoreBluetooth drains its queue; delaying ACK consumption until
+	// then makes live TX totals lag the receiver by a full 256 KiB window.
 	go func() {
 		var encoded [8]byte
 		for {
 			if _, err := io.ReadFull(conn, encoded[:]); err != nil {
-				acks <- benchmarkACK{err: err}
+				state.Lock()
+				state.err = err
+				state.Unlock()
+				signal()
 				return
 			}
-			acks <- benchmarkACK{total: binary.BigEndian.Uint64(encoded[:])}
+
+			total := binary.BigEndian.Uint64(encoded[:])
+			state.Lock()
+			if total < state.confirmed || total > state.sent {
+				state.err = errors.New("invalid benchmark acknowledgement")
+				state.Unlock()
+				signal()
+				return
+			}
+			delta := total - state.confirmed
+			state.confirmed = total
+			state.Unlock()
+
+			if delta > 0 {
+				addConfirmed(delta)
+			}
+			signal()
 		}
 	}()
 
-	var sent uint64
-	var confirmed uint64
 	for {
-		for sent-confirmed < benchmarkOutstandingWindow {
-			remaining := benchmarkOutstandingWindow - (sent - confirmed)
-			block := min(uint64(len(payload)), remaining)
-			if err := writeFull(conn, payload[:block]); err != nil {
-				return err
-			}
-			sent += block
+		state.Lock()
+		if state.err != nil {
+			err := state.err
+			state.Unlock()
+			return err
 		}
-		ack := <-acks
-		if ack.err != nil {
-			return ack.err
+		outstanding := state.sent - state.confirmed
+		if outstanding >= benchmarkOutstandingWindow {
+			state.Unlock()
+			<-wake
+			continue
 		}
-		if ack.total < confirmed || ack.total > sent {
-			return errors.New("invalid benchmark acknowledgement")
-		}
-		if ack.total > confirmed {
-			addConfirmed(ack.total - confirmed)
-			confirmed = ack.total
+
+		remaining := benchmarkOutstandingWindow - outstanding
+		block := min(uint64(len(payload)), remaining)
+		// Reserve the bytes before writing. A net.Pipe receiver, and sometimes a
+		// fast real receiver, can return its acknowledgement before Write returns.
+		state.sent += block
+		state.Unlock()
+
+		if err := writeFull(conn, payload[:block]); err != nil {
+			return err
 		}
 	}
 }

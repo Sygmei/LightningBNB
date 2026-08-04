@@ -19,3 +19,7 @@ require (
 	github.com/tinygo-org/pio v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20241204233417-43b7b7cde48d // indirect
 )
+
+// Keep the BLE backend pinned and carry the documented macOS write-readiness
+// fix in-tree until it is available in a released upstream version.
+replace tinygo.org/x/bluetooth => ./third_party/bluetooth-v0.15.0

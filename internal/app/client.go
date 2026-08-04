@@ -60,13 +60,20 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 
 	adapter := ble.NewAdapter()
 	deviceID := cfg.DeviceID
+	var selectedDevice *ble.Device
 	if deviceID == "" {
 		if !cfg.Interactive {
 			return errors.New("--device is required when stdin is not an interactive terminal")
 		}
-		deviceID, err = chooseDevice(ctx, adapter, cfg.ScanTimeout, cfg.Input, cfg.ErrorOutput)
+		selected, chooseErr := chooseDevice(ctx, adapter, cfg.ScanTimeout, cfg.Input, cfg.ErrorOutput)
+		err = chooseErr
 		if err != nil {
 			return err
+		}
+		selectedDevice = &selected
+		deviceID = selected.ServerID
+		if deviceID == "" {
+			deviceID = selected.ID
 		}
 	}
 
@@ -125,13 +132,19 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				continue
 			}
 
-			device, err := adapter.Find(ctx, deviceID, cfg.ScanTimeout)
-			if err != nil {
-				logger.Printf("discover server: %v", err)
-				if !waitContext(ctx, time.Second) {
-					break
+			var device ble.Device
+			if selectedDevice != nil {
+				device = *selectedDevice
+				selectedDevice = nil
+			} else {
+				device, err = adapter.Find(ctx, deviceID, cfg.ScanTimeout)
+				if err != nil {
+					logger.Printf("discover server: %v", err)
+					if !waitContext(ctx, time.Second) {
+						break
+					}
+					continue
 				}
-				continue
 			}
 			if device.ServerID != "" && deviceID != device.ServerID {
 				logger.Printf("resolved platform device %s to stable server ID %s", device.ID, device.ServerID)
@@ -194,14 +207,14 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	}
 }
 
-func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Duration, input io.Reader, output io.Writer) (string, error) {
+func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Duration, input io.Reader, output io.Writer) (ble.Device, error) {
 	devices, err := adapter.Scan(ctx, timeout)
 	if err != nil {
-		return "", err
+		return ble.Device{}, err
 	}
 	sortDevices(devices)
 	if len(devices) == 0 {
-		return "", errors.New("no LightningBNB servers found")
+		return ble.Device{}, errors.New("no LightningBNB servers found")
 	}
 	_, _ = fmt.Fprintln(output, "Nearby LightningBNB servers:")
 	for i, device := range devices {
@@ -219,19 +232,15 @@ func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Durati
 	scanner := bufio.NewScanner(input)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return "", err
+			return ble.Device{}, err
 		}
-		return "", errors.New("no server selection provided")
+		return ble.Device{}, errors.New("no server selection provided")
 	}
 	selection, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
 	if err != nil || selection < 1 || selection > len(devices) {
-		return "", errors.New("invalid server selection")
+		return ble.Device{}, errors.New("invalid server selection")
 	}
-	selected := devices[selection-1]
-	if selected.ServerID != "" {
-		return selected.ServerID, nil
-	}
-	return selected.ID, nil
+	return devices[selection-1], nil
 }
 
 func waitContext(ctx context.Context, duration time.Duration) bool {

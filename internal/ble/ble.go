@@ -20,7 +20,8 @@ const (
 	IdentityUUIDString = "13f0b6a3-4746-4c42-8e2f-1f62e4a0b1a0"
 	TestCompanyID      = 0xffff
 
-	maxPacketMTU = 244
+	maxPacketMTU       = 244
+	probeSettlingDelay = 250 * time.Millisecond
 )
 
 var (
@@ -43,8 +44,9 @@ type Device struct {
 	ServiceData      []string
 	ManufacturerData []string
 
-	address    bluetooth.Address
-	connection *pendingConnection
+	address          bluetooth.Address
+	connection       *pendingConnection
+	identityProbedAt time.Time
 }
 
 type pendingConnection struct {
@@ -105,6 +107,7 @@ func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, e
 		identifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		serverID, identifyErr := a.identify(identifyCtx, devices[index])
 		cancel()
+		devices[index].identityProbedAt = time.Now()
 		if identifyErr == nil {
 			devices[index].ServerID = serverID.String()
 		}
@@ -406,6 +409,15 @@ func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, 
 		native, havePendingConnection = device.connection.take()
 	}
 	if !havePendingConnection {
+		if wait := probeSettlingDelay - time.Since(device.identityProbedAt); !device.identityProbedAt.IsZero() && wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
 		var err error
 		native, err = a.connectNative(ctx, device)
 		if err != nil {
