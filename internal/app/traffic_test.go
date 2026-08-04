@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -30,8 +29,11 @@ func TestTrafficReporterPrintsFinalTotals(t *testing.T) {
 	cancel()
 
 	var message string
-	runTrafficReporter(ctx, time.Hour, &counter, func(format string, args ...any) {
-		message = fmt.Sprintf(format, args...)
+	runTrafficReporter(ctx, time.Hour, &counter, func(current, previous traffic.Snapshot, elapsed time.Duration, final bool) {
+		if !final {
+			t.Fatal("canceled reporter did not produce a final report")
+		}
+		message = "traffic final " + formatTraffic(current, previous, elapsed)
 	})
 	if !strings.Contains(message, "traffic final tx=2.0 KiB rx=512 B") {
 		t.Fatalf("final stats = %q", message)

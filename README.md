@@ -127,9 +127,11 @@ To exercise the compression code path, add `--compression` to both commands. Ben
 
 The benchmark uses one stream per direction by default. `--direction upload`, `--direction download`, and `--direction both` measure traffic relative to the benchmark client. `--connections N` sets the number of streams per direction (up to 32 for one-way tests or 16 in each direction for bidirectional tests), and `--stats-interval` changes the live reporting interval. BLE session resumption remains active during the run.
 
+When stderr is an interactive terminal, live traffic statistics appear in an in-place dashboard instead of adding one log line per interval. Diagnostics are printed above the dashboard without disrupting it. Redirected stderr retains the line-oriented format for logs and scripts; set `NO_COLOR=1` to disable dashboard colors.
+
 Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 256 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements every 16 KiB without counting them as payload.
 
-The client prints one-second live rates followed by a final whole-run average, for example:
+The benchmark also prints a final whole-run result; redirected logs retain that line along with the interval reports:
 
 ```text
 lightningbnb: 2026/08/03 12:00:30 benchmark result duration=30s tx=3.2 MiB rx=3.0 MiB tx-rate=109.2 KiB/s rx-rate=102.4 KiB/s

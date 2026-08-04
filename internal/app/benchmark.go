@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -39,7 +38,9 @@ type BenchmarkClientConfig struct {
 	DialTimeout   time.Duration
 	Connections   int
 	StatsInterval time.Duration
+	StatsTUI      bool
 	ErrorOutput   io.Writer
+	console       *runtimeConsole
 }
 
 type benchmarkConnection interface {
@@ -93,7 +94,12 @@ func runBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig, open ben
 		cfg.ErrorOutput = io.Discard
 	}
 	direction, _ := parseBenchmarkDirection(cfg.Direction)
-	logger := log.New(cfg.ErrorOutput, "lightningbnb: ", log.LstdFlags)
+	console := cfg.console
+	if console == nil {
+		console = newRuntimeConsole(cfg.ErrorOutput, cfg.StatsTUI)
+		defer console.Close()
+	}
+	logger := console.Logger()
 	peers := make([]benchmarkPeer, 0, len(directions))
 	defer func() { closeBenchmarkConnections(peers) }()
 	for _, streamDirection := range directions {
@@ -128,7 +134,7 @@ func runBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig, open ben
 	}
 
 	counter := &traffic.Counter{}
-	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, logger.Printf)
+	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, console.ReportTraffic)
 	defer stopStats()
 	logger.Printf(
 		"benchmark started: direction=%s streams=%d duration=%s",

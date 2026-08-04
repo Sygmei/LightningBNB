@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -27,6 +26,7 @@ type ClientConfig struct {
 	ResumeTimeout      time.Duration
 	MaxConnections     int
 	StatsInterval      time.Duration
+	StatsTUI           bool
 	Compression        bool
 	Benchmark          *BenchmarkClientConfig
 	SuppressListenAddr bool
@@ -46,7 +46,9 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	if cfg.ErrorOutput == nil {
 		cfg.ErrorOutput = io.Discard
 	}
-	logger := log.New(cfg.ErrorOutput, "lightningbnb: ", log.LstdFlags)
+	console := newRuntimeConsole(cfg.ErrorOutput, cfg.StatsTUI)
+	defer console.Close()
+	logger := console.Logger()
 	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)))
 	if err != nil {
 		return fmt.Errorf("listen for local TCP connections: %w", err)
@@ -69,7 +71,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	}
 
 	counter := &traffic.Counter{}
-	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, logger.Printf)
+	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, console.ReportTraffic)
 	defer stopStats()
 	clientBridge := bridge.NewClientWithTraffic(cfg.ResumeTimeout, cfg.MaxConnections, logger.Printf, counter)
 	bridgeErr := make(chan error, 1)
@@ -156,6 +158,8 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 			if cfg.Benchmark != nil && benchmarkDone == nil {
 				benchmarkCfg := *cfg.Benchmark
 				benchmarkCfg.ErrorOutput = cfg.ErrorOutput
+				benchmarkCfg.StatsTUI = cfg.StatsTUI
+				benchmarkCfg.console = console
 				benchmarkCtx, cancel := context.WithCancel(ctx)
 				cancelBenchmark = cancel
 				done := make(chan error, 1)

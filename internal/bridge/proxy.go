@@ -51,7 +51,7 @@ func ProxyWithTraffic(tcp net.Conn, stream *mux.Stream, counter *traffic.Counter
 	}
 	_ = stream.Close()
 	_ = tcp.Close()
-	return firstErr
+	return cleanProxyError(firstErr)
 }
 
 type countingWriter struct {
@@ -83,6 +83,18 @@ func counterRX(counter *traffic.Counter) func(uint64) {
 
 func cleanCopyError(err error) error {
 	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
+}
+
+// cleanProxyError is applied only after a terminal copy error has already
+// reset the multiplexed stream and closed the TCP socket. Peer resets, local
+// socket aborts, and broken pipes are normal ways for applications to finish a
+// single TCP connection, so they should not be reported as bridge failures.
+func cleanProxyError(err error) error {
+	err = cleanCopyError(err)
+	if err == nil || isExpectedNetworkClose(err) {
 		return nil
 	}
 	return err

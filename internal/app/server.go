@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strconv"
 	"time"
@@ -24,6 +23,7 @@ type ServerConfig struct {
 	ResumeTimeout  time.Duration
 	MaxConnections int
 	StatsInterval  time.Duration
+	StatsTUI       bool
 	Benchmark      bool
 	Compression    bool
 	ErrorOutput    io.Writer
@@ -33,7 +33,9 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	if cfg.ErrorOutput == nil {
 		cfg.ErrorOutput = io.Discard
 	}
-	logger := log.New(cfg.ErrorOutput, "lightningbnb: ", log.LstdFlags)
+	console := newRuntimeConsole(cfg.ErrorOutput, cfg.StatsTUI)
+	defer console.Close()
+	logger := console.Logger()
 	target := ""
 	if !cfg.Benchmark {
 		target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(cfg.TargetPort))
@@ -49,7 +51,7 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 		logger.Printf("advertising %q; forwarding TCP streams to %s", cfg.Name, target)
 	}
 	counter := &traffic.Counter{}
-	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, logger.Printf)
+	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, console.ReportTraffic)
 	defer stopStats()
 
 	var currentLink *link.Session

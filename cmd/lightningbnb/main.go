@@ -82,6 +82,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			ResumeTimeout:  *resumeTimeout,
 			MaxConnections: *maxConnections,
 			StatsInterval:  *statsInterval,
+			StatsTUI:       isTerminalWriter(errorOutput),
 			Compression:    *compression,
 			Interactive:    interactive,
 			Input:          input,
@@ -132,6 +133,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			ResumeTimeout:  *resumeTimeout,
 			MaxConnections: *maxConnections,
 			StatsInterval:  *statsInterval,
+			StatsTUI:       isTerminalWriter(errorOutput),
 			Benchmark:      *benchmark,
 			Compression:    *compression,
 			ErrorOutput:    errorOutput,
@@ -174,6 +176,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			ResumeTimeout:      *resumeTimeout,
 			MaxConnections:     32,
 			StatsInterval:      0,
+			StatsTUI:           isTerminalWriter(errorOutput),
 			Compression:        *compression,
 			SuppressListenAddr: true,
 			Benchmark: &app.BenchmarkClientConfig{
@@ -182,6 +185,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 				DialTimeout:   *setupTimeout,
 				Connections:   *connections,
 				StatsInterval: *statsInterval,
+				StatsTUI:      isTerminalWriter(errorOutput),
 			},
 			Interactive: interactive,
 			Input:       input,
@@ -226,4 +230,9 @@ func printUsage(output io.Writer) {
 func isTerminal(file *os.File) bool {
 	info, err := file.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func isTerminalWriter(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	return ok && os.Getenv("TERM") != "dumb" && isTerminal(file)
 }

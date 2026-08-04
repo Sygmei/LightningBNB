@@ -8,15 +8,17 @@ import (
 	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
-func startTrafficReporter(parent context.Context, interval time.Duration, counter *traffic.Counter, logf func(string, ...any)) func() {
-	if interval <= 0 || counter == nil || logf == nil {
+type trafficReportFunc func(current, previous traffic.Snapshot, elapsed time.Duration, final bool)
+
+func startTrafficReporter(parent context.Context, interval time.Duration, counter *traffic.Counter, report trafficReportFunc) func() {
+	if interval <= 0 || counter == nil || report == nil {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runTrafficReporter(ctx, interval, counter, logf)
+		runTrafficReporter(ctx, interval, counter, report)
 	}()
 	return func() {
 		cancel()
@@ -24,7 +26,7 @@ func startTrafficReporter(parent context.Context, interval time.Duration, counte
 	}
 }
 
-func runTrafficReporter(ctx context.Context, interval time.Duration, counter *traffic.Counter, logf func(string, ...any)) {
+func runTrafficReporter(ctx context.Context, interval time.Duration, counter *traffic.Counter, report trafficReportFunc) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	previous := counter.Snapshot()
@@ -33,13 +35,13 @@ func runTrafficReporter(ctx context.Context, interval time.Duration, counter *tr
 		select {
 		case now := <-ticker.C:
 			current := counter.Snapshot()
-			logf("traffic %s", formatTraffic(current, previous, now.Sub(previousAt)))
+			report(current, previous, now.Sub(previousAt), false)
 			previous = current
 			previousAt = now
 		case <-ctx.Done():
 			now := time.Now()
 			current := counter.Snapshot()
-			logf("traffic final %s", formatTraffic(current, previous, now.Sub(previousAt)))
+			report(current, previous, now.Sub(previousAt), true)
 			return
 		}
 	}
