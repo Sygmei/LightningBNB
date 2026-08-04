@@ -31,6 +31,8 @@ var (
 	marker       = []byte("LBNB1")
 )
 
+var errInvalidConnectedDevice = errors.New("bluetooth backend returned an invalid device")
+
 type Device struct {
 	ID               string
 	ServerID         string
@@ -41,7 +43,28 @@ type Device struct {
 	ServiceData      []string
 	ManufacturerData []string
 
-	address bluetooth.Address
+	address    bluetooth.Address
+	connection *pendingConnection
+}
+
+type pendingConnection struct {
+	mu     sync.Mutex
+	device *bluetooth.Device
+}
+
+func newPendingConnection(device *bluetooth.Device) *pendingConnection {
+	return &pendingConnection{device: device}
+}
+
+func (c *pendingConnection) take() (bluetooth.Device, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.device == nil {
+		return bluetooth.Device{}, false
+	}
+	device := *c.device
+	c.device = nil
+	return device, true
 }
 
 type PeripheralListener interface {
@@ -216,24 +239,77 @@ func appendUnique(values []string, additions ...string) []string {
 }
 
 func (a *Adapter) Find(ctx context.Context, id string, duration time.Duration) (Device, error) {
-	devices, err := a.Scan(ctx, duration)
+	devices, err := a.scan(ctx, duration, true)
 	if err != nil {
 		return Device{}, err
 	}
-	for _, device := range devices {
-		if device.ID == id || device.ServerID == strings.ToLower(id) {
-			return device, nil
+	for index := range devices {
+		if devices[index].ID == id {
+			native, serverID, identifyErr := a.identifyConnected(ctx, devices[index])
+			if native == nil {
+				// Preserve the old platform-ID behavior if the identity probe
+				// itself cannot connect. Connect will report the useful error.
+				return devices[index], nil
+			}
+			if identifyErr == nil {
+				devices[index].ServerID = serverID.String()
+			} else if ctx.Err() != nil {
+				_ = native.Disconnect()
+				return Device{}, ctx.Err()
+			}
+			// Even an older server without the identity characteristic can
+			// reuse this connection for its transport characteristics.
+			devices[index].connection = newPendingConnection(native)
+			return devices[index], nil
 		}
+	}
+
+	normalizedID := strings.ToLower(id)
+	requestedID, err := ParseServerID(normalizedID)
+	if err != nil {
+		return Device{}, fmt.Errorf("LightningBNB server %q not found", id)
+	}
+	for index := range devices {
+		native, serverID, identifyErr := a.identifyConnected(ctx, devices[index])
+		if identifyErr != nil {
+			if native != nil {
+				_ = native.Disconnect()
+			}
+			if ctx.Err() != nil {
+				return Device{}, ctx.Err()
+			}
+			continue
+		}
+		devices[index].ServerID = serverID.String()
+		if serverID == requestedID {
+			// Reuse the connection used to read the stable identity. In
+			// particular, CoreBluetooth disconnects asynchronously and may
+			// otherwise deliver the old disconnect event to an immediate new
+			// connection attempt.
+			devices[index].connection = newPendingConnection(native)
+			return devices[index], nil
+		}
+		_ = native.Disconnect()
 	}
 	return Device{}, fmt.Errorf("LightningBNB server %q not found", id)
 }
 
 func (a *Adapter) identify(ctx context.Context, device Device) (ServerID, error) {
-	native, err := a.connectNative(ctx, device)
+	native, serverID, err := a.identifyConnected(ctx, device)
+	if native != nil {
+		_ = native.Disconnect()
+	}
 	if err != nil {
 		return ServerID{}, err
 	}
-	defer native.Disconnect()
+	return serverID, nil
+}
+
+func (a *Adapter) identifyConnected(ctx context.Context, device Device) (*bluetooth.Device, ServerID, error) {
+	native, err := a.connectNative(ctx, device)
+	if err != nil {
+		return nil, ServerID{}, err
+	}
 
 	type result struct {
 		id  ServerID
@@ -247,9 +323,12 @@ func (a *Adapter) identify(ctx context.Context, device Device) (ServerID, error)
 	select {
 	case <-ctx.Done():
 		_ = native.Disconnect()
-		return ServerID{}, ctx.Err()
+		return nil, ServerID{}, ctx.Err()
 	case result := <-done:
-		return result.id, result.err
+		if result.err != nil {
+			return &native, ServerID{}, result.err
+		}
+		return &native, result.id, nil
 	}
 }
 
@@ -304,17 +383,34 @@ func (a *Adapter) connectNative(ctx context.Context, device Device) (bluetooth.D
 		if result.err != nil {
 			return bluetooth.Device{}, fmt.Errorf("connect to %s: %w", device.ID, result.err)
 		}
+		if err := validateConnectedDevice(result.device, device.address); err != nil {
+			return bluetooth.Device{}, fmt.Errorf("connect to %s: %w", device.ID, err)
+		}
 		return result.device, nil
 	}
+}
+
+func validateConnectedDevice(device bluetooth.Device, expectedAddress bluetooth.Address) error {
+	if device.Address != expectedAddress {
+		return errInvalidConnectedDevice
+	}
+	return nil
 }
 
 func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, error) {
 	if err := a.Enable(); err != nil {
 		return nil, fmt.Errorf("enable Bluetooth: %w", err)
 	}
-	native, err := a.connectNative(ctx, device)
-	if err != nil {
-		return nil, err
+	native, havePendingConnection := bluetooth.Device{}, false
+	if device.connection != nil {
+		native, havePendingConnection = device.connection.take()
+	}
+	if !havePendingConnection {
+		var err error
+		native, err = a.connectNative(ctx, device)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	services, err := native.DiscoverServices([]bluetooth.UUID{ServiceUUID})
