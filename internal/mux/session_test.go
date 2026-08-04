@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Sygmei/LightningBNB/internal/protocol"
+	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
 func TestMultiplexedStreamsAreIsolated(t *testing.T) {
@@ -167,8 +168,10 @@ func TestStreamLimit(t *testing.T) {
 
 func TestCompressedMultiplexedStream(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	client := NewClientWithCompression(clientConn, 1, true)
-	server := NewServerWithCompression(serverConn, 1, true)
+	clientTraffic := &traffic.Counter{}
+	serverTraffic := &traffic.Counter{}
+	client := NewClientWithCompressionAndTraffic(clientConn, 1, true, clientTraffic)
+	server := NewServerWithCompressionAndTraffic(serverConn, 1, true, serverTraffic)
 	defer client.Close()
 	defer server.Close()
 
@@ -205,6 +208,20 @@ func TestCompressedMultiplexedStream(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Fatal("compressed round trip changed payload")
+	}
+	for name, snapshot := range map[string]traffic.Snapshot{
+		"client": clientTraffic.Snapshot(),
+		"server": serverTraffic.Snapshot(),
+	} {
+		if !snapshot.CompressionEnabled {
+			t.Fatalf("%s compression counters are disabled", name)
+		}
+		if snapshot.TXUncompressed != uint64(len(payload)) || snapshot.RXUncompressed != uint64(len(payload)) {
+			t.Fatalf("%s uncompressed totals = tx %d rx %d, want %d", name, snapshot.TXUncompressed, snapshot.RXUncompressed, len(payload))
+		}
+		if snapshot.TXCompressed >= snapshot.TXUncompressed || snapshot.RXCompressed >= snapshot.RXUncompressed {
+			t.Fatalf("%s compressed totals did not shrink: %+v", name, snapshot)
+		}
 	}
 	_ = stream.Close()
 	select {

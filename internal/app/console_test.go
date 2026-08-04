@@ -13,7 +13,13 @@ func TestRuntimeConsoleUsesLineLogsWhenTUICannotBeUsed(t *testing.T) {
 	var output bytes.Buffer
 	console := newRuntimeConsole(&output, false)
 	console.ReportTraffic(
-		traffic.Snapshot{TX: 2048, RX: 512},
+		traffic.Snapshot{
+			TX:                 2048,
+			RX:                 512,
+			CompressionEnabled: true,
+			TXUncompressed:     2048,
+			TXCompressed:       1024,
+		},
 		traffic.Snapshot{TX: 1024, RX: 0},
 		time.Second,
 		false,
@@ -25,6 +31,9 @@ func TestRuntimeConsoleUsesLineLogsWhenTUICannotBeUsed(t *testing.T) {
 	}
 	if strings.Contains(got, "\x1b[") {
 		t.Fatalf("plain traffic output contains ANSI control sequences: %q", got)
+	}
+	if strings.Contains(got, "uncompressed") {
+		t.Fatalf("plain traffic output unexpectedly changed for compression stats: %q", got)
 	}
 }
 
@@ -74,6 +83,9 @@ func TestRuntimeConsoleUpdatesDashboardInPlace(t *testing.T) {
 	if strings.Contains(got, "traffic tx=") {
 		t.Fatalf("dashboard also emitted line-oriented traffic logs: %q", got)
 	}
+	if strings.Contains(got, "uncompressed") {
+		t.Fatalf("dashboard showed compression rows before compression was enabled: %q", got)
+	}
 	if !strings.HasSuffix(got, "\n") {
 		t.Fatalf("closed dashboard did not leave the cursor on a fresh line: %q", got)
 	}
@@ -85,11 +97,40 @@ func TestTrafficDashboardHasAlignedBorders(t *testing.T) {
 	console.peakRate = 2048
 	console.peakCombinedRate = 3072
 
-	lines := console.trafficLines(traffic.Snapshot{TX: 4096, RX: 1536}, 2048, 1024, false)
+	lines := console.trafficLines(traffic.Snapshot{
+		TX:                 4096,
+		RX:                 1536,
+		CompressionEnabled: true,
+		TXUncompressed:     4096,
+		TXCompressed:       1024,
+		RXUncompressed:     1536,
+		RXCompressed:       768,
+	}, 2048, 1024, false)
 	wantWidth := len([]rune(lines[0]))
 	for index, line := range lines[1:] {
 		if got := len([]rune(line)); got != wantWidth {
 			t.Errorf("line %d has width %d, want %d: %q", index+2, got, wantWidth, line)
+		}
+	}
+}
+
+func TestTrafficDashboardShowsCompressionTotals(t *testing.T) {
+	console := newRuntimeConsole(&bytes.Buffer{}, true)
+	console.color = false
+	lines := strings.Join(console.trafficLines(traffic.Snapshot{
+		CompressionEnabled: true,
+		TXUncompressed:     4096,
+		TXCompressed:       1024,
+		RXUncompressed:     2048,
+		RXCompressed:       1024,
+	}, 0, 0, false), "\n")
+
+	for _, want := range []string{
+		"TX  uncompressed 4.0 KiB    compressed 1.0 KiB    saved   75.0%",
+		"RX  uncompressed 2.0 KiB    compressed 1.0 KiB    saved   50.0%",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("compression dashboard does not contain %q: %q", want, lines)
 		}
 	}
 }

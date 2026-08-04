@@ -194,6 +194,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 					return written, err
 				}
 			}
+			encodedSize := len(payload)
 			s.sendWindow -= uint32(n)
 			needsSchedule := s.enqueueLocked(protocol.Frame{Type: protocol.FrameData, StreamID: s.id, Payload: payload})
 			s.mu.Unlock()
@@ -201,6 +202,9 @@ func (s *Stream) Write(p []byte) (int, error) {
 				if err := s.session.schedule(s); err != nil {
 					return written, err
 				}
+			}
+			if s.session.compression && s.session.traffic != nil {
+				s.session.traffic.AddCompressionTX(uint64(n), uint64(encodedSize))
 			}
 			written += n
 			p = p[n:]
@@ -217,6 +221,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 }
 
 func (s *Stream) receiveData(data []byte) error {
+	encodedSize := len(data)
 	if s.session.compression {
 		decoded, err := decodeCompressedPayload(data)
 		if err != nil {
@@ -234,6 +239,9 @@ func (s *Stream) receiveData(data []byte) error {
 	}
 	s.receiveWindow -= uint32(len(data))
 	s.inbound = append(s.inbound, data...)
+	if s.session.compression && s.session.traffic != nil {
+		s.session.traffic.AddCompressionRX(uint64(len(data)), uint64(encodedSize))
+	}
 	s.signalLocked()
 	return nil
 }

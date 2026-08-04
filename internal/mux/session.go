@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/Sygmei/LightningBNB/internal/protocol"
+	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
 const (
@@ -28,6 +29,7 @@ type Session struct {
 	client      bool
 	maxStreams  int
 	compression bool
+	traffic     *traffic.Counter
 
 	mu      sync.Mutex
 	streams map[uint32]*Stream
@@ -43,24 +45,35 @@ type Session struct {
 }
 
 func NewClient(conn net.Conn, maxStreams int) *Session {
-	return newSession(conn, true, maxStreams, false)
+	return newSession(conn, true, maxStreams, false, nil)
 }
 
 func NewServer(conn net.Conn, maxStreams int) *Session {
-	return newSession(conn, false, maxStreams, false)
+	return newSession(conn, false, maxStreams, false, nil)
 }
 
 func NewClientWithCompression(conn net.Conn, maxStreams int, compression bool) *Session {
-	return newSession(conn, true, maxStreams, compression)
+	return newSession(conn, true, maxStreams, compression, nil)
 }
 
 func NewServerWithCompression(conn net.Conn, maxStreams int, compression bool) *Session {
-	return newSession(conn, false, maxStreams, compression)
+	return newSession(conn, false, maxStreams, compression, nil)
 }
 
-func newSession(conn net.Conn, client bool, maxStreams int, compression bool) *Session {
+func NewClientWithCompressionAndTraffic(conn net.Conn, maxStreams int, compression bool, counter *traffic.Counter) *Session {
+	return newSession(conn, true, maxStreams, compression, counter)
+}
+
+func NewServerWithCompressionAndTraffic(conn net.Conn, maxStreams int, compression bool, counter *traffic.Counter) *Session {
+	return newSession(conn, false, maxStreams, compression, counter)
+}
+
+func newSession(conn net.Conn, client bool, maxStreams int, compression bool, counter *traffic.Counter) *Session {
 	if maxStreams <= 0 {
 		maxStreams = 1
+	}
+	if compression && counter != nil {
+		counter.EnableCompression()
 	}
 	nextID := uint32(2)
 	if client {
@@ -71,6 +84,7 @@ func newSession(conn net.Conn, client bool, maxStreams int, compression bool) *S
 		client:      client,
 		maxStreams:  maxStreams,
 		compression: compression,
+		traffic:     counter,
 		streams:     make(map[uint32]*Stream),
 		nextID:      nextID,
 		control:     make(chan protocol.Frame, maxStreams*8),

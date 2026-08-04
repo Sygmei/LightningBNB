@@ -15,7 +15,7 @@ import (
 
 const (
 	trafficBarWidth     = 14
-	trafficContentWidth = 58
+	trafficContentWidth = 64
 )
 
 type runtimeConsole struct {
@@ -124,13 +124,40 @@ func (c *runtimeConsole) trafficLines(current traffic.Snapshot, txRate, rxRate f
 		rxLine = strings.Replace(rxLine, "RX", c.paint("RX", "1;32"), 1)
 		rxLine = strings.Replace(rxLine, rxBar, c.paint(rxBar, "32"), 1)
 	}
-	return []string{
+	lines := []string{
 		top,
 		txLine,
 		rxLine,
+	}
+	if current.CompressionEnabled {
+		txCompression := dashboardLine(compressionLine("TX", current.TXUncompressed, current.TXCompressed))
+		rxCompression := dashboardLine(compressionLine("RX", current.RXUncompressed, current.RXCompressed))
+		if c.color {
+			txCompression = strings.Replace(txCompression, "TX", c.paint("TX", "1;33"), 1)
+			rxCompression = strings.Replace(rxCompression, "RX", c.paint("RX", "1;32"), 1)
+		}
+		lines = append(lines, txCompression, rxCompression)
+	}
+	lines = append(
+		lines,
 		dashboardLine(fmt.Sprintf("⇅   total %-10s now %-11s peak %-9s", formatBytes(float64(current.TX+current.RX)), formatBytes(combinedRate)+"/s", formatBytes(c.peakCombinedRate)+"/s")),
 		c.paint("╰"+strings.Repeat("─", trafficContentWidth+2)+"╯", "1;36"),
+	)
+	return lines
+}
+
+func compressionLine(direction string, uncompressed, compressed uint64) string {
+	savings := 0.0
+	if uncompressed > 0 {
+		savings = (1 - float64(compressed)/float64(uncompressed)) * 100
 	}
+	return fmt.Sprintf(
+		"%s  uncompressed %-10s compressed %-10s saved %6.1f%%",
+		direction,
+		formatBytes(float64(uncompressed)),
+		formatBytes(float64(compressed)),
+		savings,
+	)
 }
 
 func (c *runtimeConsole) rateBar(rate float64) string {

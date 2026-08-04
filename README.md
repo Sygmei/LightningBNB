@@ -138,6 +138,8 @@ The benchmark uses one stream per direction by default. `--direction upload`, `-
 
 When stderr is an interactive terminal, live traffic statistics appear in an in-place dashboard instead of adding one log line per interval. Diagnostics are printed above the dashboard without disrupting it. Redirected stderr retains the line-oriented format for logs and scripts; set `NO_COLOR=1` to disable dashboard colors.
 
+When compression is negotiated, the dashboard adds TX and RX rows comparing the original DATA payload totals with their encoded compressed totals and the resulting percentage saved. These compression totals include the one-byte DATA encoding marker, but exclude multiplexing, link, GATT, Bluetooth, and retransmission overhead.
+
 Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 256 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements every 16 KiB without counting them as payload.
 
 The benchmark also prints a final whole-run result; redirected logs retain that line along with the interval reports:

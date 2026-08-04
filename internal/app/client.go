@@ -94,7 +94,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 		if err != nil {
 			return err
 		}
-		muxSession := mux.NewClientWithCompression(linkSession, cfg.MaxConnections, cfg.Compression)
+		muxSession := mux.NewClientWithCompressionAndTraffic(linkSession, cfg.MaxConnections, cfg.Compression, counter)
 		clientBridge.SetEndpoint(&bridge.Endpoint{Link: linkSession, Mux: muxSession})
 		logger.Printf("starting BLE session for server %s", deviceID)
 
@@ -160,6 +160,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				benchmarkCfg.ErrorOutput = cfg.ErrorOutput
 				benchmarkCfg.StatsTUI = cfg.StatsTUI
 				benchmarkCfg.console = console
+				benchmarkCfg.counter = counter
 				benchmarkCtx, cancel := context.WithCancel(ctx)
 				cancelBenchmark = cancel
 				done := make(chan error, 1)

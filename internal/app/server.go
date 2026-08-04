@@ -125,7 +125,7 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 				MaxConnections: cfg.MaxConnections,
 				Compression:    hello.Compression,
 			})
-			currentMux = mux.NewServerWithCompression(currentLink, cfg.MaxConnections, hello.Compression)
+			currentMux = mux.NewServerWithCompressionAndTraffic(currentLink, cfg.MaxConnections, hello.Compression, counter)
 			muxForBridge := currentMux
 			if cfg.Benchmark {
 				go func() {

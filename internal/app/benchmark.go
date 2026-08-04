@@ -41,6 +41,7 @@ type BenchmarkClientConfig struct {
 	StatsTUI      bool
 	ErrorOutput   io.Writer
 	console       *runtimeConsole
+	counter       *traffic.Counter
 }
 
 type benchmarkConnection interface {
@@ -133,7 +134,10 @@ func runBenchmarkClient(ctx context.Context, cfg BenchmarkClientConfig, open ben
 		setBenchmarkDeadline(peer.conn, time.Time{})
 	}
 
-	counter := &traffic.Counter{}
+	counter := cfg.counter
+	if counter == nil {
+		counter = &traffic.Counter{}
+	}
 	stopStats := startTrafficReporter(ctx, cfg.StatsInterval, counter, console.ReportTraffic)
 	defer stopStats()
 	logger.Printf(
