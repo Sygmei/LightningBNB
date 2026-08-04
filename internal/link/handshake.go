@@ -45,6 +45,27 @@ var (
 	ErrHandshake       = errors.New("invalid BLE handshake")
 )
 
+type RejectedError struct {
+	Reason string
+}
+
+func (e *RejectedError) Error() string {
+	if e.Reason == "" {
+		return ErrRejected.Error()
+	}
+	return ErrRejected.Error() + ": " + e.Reason
+}
+
+func (e *RejectedError) Unwrap() error { return ErrRejected }
+
+func RejectionReason(err error) string {
+	var rejected *RejectedError
+	if errors.As(err, &rejected) {
+		return rejected.Reason
+	}
+	return ""
+}
+
 func ReadHello(ctx context.Context, conn PacketConn) (Hello, error) {
 	var hello Hello
 	var haveID bool

@@ -9,13 +9,15 @@ import (
 func TestTransportServiceRegistersBothCharacteristicHandles(t *testing.T) {
 	var rx bluetooth.Characteristic
 	var tx bluetooth.Characteristic
+	var identity bluetooth.Characteristic
 	onWrite := func(bluetooth.Connection, int, []byte) {}
+	serverID := ServerID{1, 2, 3, 4}
 
-	service := transportService(&rx, &tx, onWrite)
+	service := transportService(&rx, &tx, &identity, serverID, onWrite)
 	if service.UUID != ServiceUUID {
 		t.Fatalf("service UUID = %s", service.UUID)
 	}
-	if len(service.Characteristics) != 2 {
+	if len(service.Characteristics) != 3 {
 		t.Fatalf("characteristic count = %d", len(service.Characteristics))
 	}
 	rxConfig := service.Characteristics[0]
@@ -32,6 +34,13 @@ func TestTransportServiceRegistersBothCharacteristicHandles(t *testing.T) {
 	}
 	if txConfig.Flags != bluetooth.CharacteristicNotifyPermission {
 		t.Fatal("TX characteristic does not support notifications")
+	}
+	identityConfig := service.Characteristics[2]
+	if identityConfig.UUID != IdentityUUID || identityConfig.Handle != &identity {
+		t.Fatal("identity characteristic is not registered with its handle")
+	}
+	if identityConfig.Flags != bluetooth.CharacteristicReadPermission || string(identityConfig.Value) != string(serverID[:]) {
+		t.Fatal("identity characteristic is not a readable stable server ID")
 	}
 }
 

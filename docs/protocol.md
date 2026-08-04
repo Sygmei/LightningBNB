@@ -9,12 +9,15 @@ All multi-byte integers use network byte order (big endian). Receivers reject ma
 | Service | `13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0` | Primary service |
 | RX (client → server) | `13f0b6a1-4746-4c42-8e2f-1f62e4a0b1a0` | Write without response; write with response is also exposed for compatibility |
 | TX (server → client) | `13f0b6a2-4746-4c42-8e2f-1f62e4a0b1a0` | Notify |
+| Server identity | `13f0b6a3-4746-4c42-8e2f-1f62e4a0b1a0` | Read |
 
 Linux advertises the service UUID and local name. Windows advertises the connectable GATT service directly through WinRT. Windows may omit the configured local name, in which case scanners display `(unnamed)` and the platform-specific device identifier remains the selection key. LightningBNB deliberately does not publish a second manufacturer-data advertisement because WinRT's generic advertisement publisher is not the connectable GATT service.
 
 The reliable link protocol supplies offsets, cumulative acknowledgements, replay, and retransmission above GATT. Clients therefore use ATT write commands on RX to keep multiple packets moving instead of waiting for an ATT response after every packet.
 
 The negotiated packet size is the smaller peer limit, capped at 244 bytes. Bootstrap packets are no larger than the 20-byte minimum ATT value size. Empty and oversized packets are invalid where a payload is required.
+
+The server identity characteristic contains a persistent random 128-bit application identifier. CLIs render it as `lbnb:<uuid>` and resolve it to the platform's current scan identifier before connecting. It is deliberately public and provides stable discovery, not authentication. Older servers without this characteristic remain reachable through their platform identifier.
 
 ## Session handshake
 

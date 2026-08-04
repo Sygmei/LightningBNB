@@ -2,7 +2,7 @@ package ble
 
 import "tinygo.org/x/bluetooth"
 
-func transportService(rx, tx *bluetooth.Characteristic, onWrite bluetooth.WriteEvent) bluetooth.Service {
+func transportService(rx, tx, identity *bluetooth.Characteristic, serverID ServerID, onWrite bluetooth.WriteEvent) bluetooth.Service {
 	return bluetooth.Service{
 		UUID: ServiceUUID,
 		Characteristics: []bluetooth.CharacteristicConfig{
@@ -16,6 +16,12 @@ func transportService(rx, tx *bluetooth.Characteristic, onWrite bluetooth.WriteE
 				Handle: tx,
 				UUID:   TXUUID,
 				Flags:  bluetooth.CharacteristicNotifyPermission,
+			},
+			{
+				Handle: identity,
+				UUID:   IdentityUUID,
+				Value:  append([]byte(nil), serverID[:]...),
+				Flags:  bluetooth.CharacteristicReadPermission,
 			},
 		},
 	}

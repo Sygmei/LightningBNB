@@ -51,13 +51,17 @@ func Scan(ctx context.Context, timeout time.Duration, all bool, output io.Writer
 		}
 		return nil
 	}
-	_, _ = fmt.Fprintln(output, "ID\tRSSI\tNAME")
+	_, _ = fmt.Fprintln(output, "SERVER_ID\tPLATFORM_ID\tRSSI\tNAME")
 	for _, device := range devices {
 		name := device.Name
 		if name == "" {
 			name = "(unnamed)"
 		}
-		_, _ = fmt.Fprintf(output, "%s\t%d\t%s\n", device.ID, device.RSSI, name)
+		serverID := device.ServerID
+		if serverID == "" {
+			serverID = "(unavailable)"
+		}
+		_, _ = fmt.Fprintf(output, "%s\t%s\t%d\t%s\n", serverID, device.ID, device.RSSI, name)
 	}
 	return nil
 }

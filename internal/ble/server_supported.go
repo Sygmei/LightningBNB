@@ -19,6 +19,7 @@ type peripheralServer struct {
 	advertisement *bluetooth.Advertisement
 	rx            bluetooth.Characteristic
 	tx            bluetooth.Characteristic
+	identity      bluetooth.Characteristic
 
 	connections chan link.PacketConn
 	done        chan struct{}
@@ -27,7 +28,7 @@ type peripheralServer struct {
 	current     *serverPacketConn
 }
 
-func StartServer(ctx context.Context, name string) (PeripheralListener, error) {
+func StartServer(ctx context.Context, name string, serverID ServerID) (PeripheralListener, error) {
 	adapter := bluetooth.DefaultAdapter
 	if err := adapter.Enable(); err != nil {
 		return nil, err
@@ -38,13 +39,11 @@ func StartServer(ctx context.Context, name string) (PeripheralListener, error) {
 		done:        make(chan struct{}),
 	}
 	adapter.SetConnectHandler(func(_ bluetooth.Device, connected bool) {
-		if connected {
-			server.ensureConnection()
-			return
+		if !connected {
+			server.closeCurrent()
 		}
-		server.closeCurrent()
 	})
-	server.service = transportService(&server.rx, &server.tx, func(_ bluetooth.Connection, _ int, packet []byte) {
+	server.service = transportService(&server.rx, &server.tx, &server.identity, serverID, func(_ bluetooth.Connection, _ int, packet []byte) {
 		server.ensureConnection().push(packet)
 	})
 	if err := adapter.AddService(&server.service); err != nil {

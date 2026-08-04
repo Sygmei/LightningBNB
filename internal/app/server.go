@@ -27,6 +27,7 @@ type ServerConfig struct {
 	Benchmark      bool
 	Compression    bool
 	PreventSleep   bool
+	ServerIDFile   string
 	ErrorOutput    io.Writer
 }
 
@@ -41,11 +42,16 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	if !cfg.Benchmark {
 		target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(cfg.TargetPort))
 	}
-	listener, err := ble.StartServer(ctx, cfg.Name)
+	serverID, serverIDPath, err := loadOrCreateServerID(cfg.ServerIDFile)
+	if err != nil {
+		return err
+	}
+	listener, err := ble.StartServer(ctx, cfg.Name, serverID)
 	if err != nil {
 		return fmt.Errorf("start Bluetooth server: %w", err)
 	}
 	defer listener.Close()
+	logger.Printf("stable server ID %s (stored in %s)", serverID, serverIDPath)
 	if cfg.PreventSleep {
 		inhibitor, err := acquireSleepInhibitor(ctx)
 		if err != nil {

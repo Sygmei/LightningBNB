@@ -101,9 +101,14 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --benchmark         handle in-memory throughput streams instead of a TCP target
 --compression       allow clients to negotiate compressed TCP payloads
 --prevent-sleep     prevent automatic system sleep while the server is running
+--server-id-file    persistent server ID file (default: OS user configuration directory)
 ```
 
 `--prevent-sleep` keeps the system awake for the lifetime of the server process without forcing the display to remain on. The native inhibitor is released on clean shutdown. On Windows, explicit user actions such as selecting Sleep or closing a laptop lid can still suspend the computer.
+
+On its first start, the server generates an application-level ID such as `lbnb:6ea4c3db-41bd-4ebf-9712-a8c01ddba387` and stores it in the OS user configuration directory. `scan` reports this stable ID alongside the transient platform Bluetooth ID, and `client --device` accepts either form. Prefer saving the `lbnb:` ID: the client resolves it to the current Bluetooth address after server or Bluetooth restarts. Use `--server-id-file` when running the server under another account or when its configuration must live at a fixed path.
+
+The stable ID is a routing label, not an authentication credential; nearby software can copy it. A server process restart still closes existing TCP streams because resumption state lives only in memory, but a running client can discover the restarted server and establish a fresh bridge session automatically.
 
 Client and server print process-relative live traffic totals and rates to stderr. `tx` is forwarded TCP payload sent across Bluetooth and `rx` is payload received from Bluetooth; protocol overhead is excluded. For example:
 

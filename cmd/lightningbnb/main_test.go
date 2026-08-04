@@ -88,8 +88,10 @@ func TestPreventSleepFlagIsAvailableOnServer(t *testing.T) {
 	if err := run(context.Background(), []string{"server", "--help"}, strings.NewReader(""), &output, &output, false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "-prevent-sleep") {
-		t.Fatalf("server help does not list --prevent-sleep: %q", output.String())
+	for _, flag := range []string{"-prevent-sleep", "-server-id-file"} {
+		if !strings.Contains(output.String(), flag) {
+			t.Fatalf("server help does not list %s: %q", flag, output.String())
+		}
 	}
 }
 

@@ -9,6 +9,6 @@ import (
 
 var ErrServerUnsupported = errors.New("Bluetooth server mode is supported only on Windows and Linux")
 
-func StartServer(context.Context, string) (PeripheralListener, error) {
+func StartServer(context.Context, string, ServerID) (PeripheralListener, error) {
 	return nil, ErrServerUnsupported
 }

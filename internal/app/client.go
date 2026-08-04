@@ -133,6 +133,10 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				}
 				continue
 			}
+			if device.ServerID != "" && deviceID != device.ServerID {
+				logger.Printf("resolved platform device %s to stable server ID %s", device.ID, device.ServerID)
+				deviceID = device.ServerID
+			}
 			connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			packetConn, err := adapter.Connect(connectCtx, device)
 			if err == nil {
@@ -144,6 +148,12 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 					_ = packetConn.Close()
 				}
 				logger.Printf("connect to server: %v", err)
+				if link.RejectionReason(err) == "resume failed" {
+					logger.Printf("server no longer has the resumable session; starting a fresh session")
+					_ = muxSession.Close()
+					_ = linkSession.Close()
+					goto nextSession
+				}
 				if !waitContext(ctx, time.Second) {
 					break
 				}
@@ -199,7 +209,11 @@ func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Durati
 		if name == "" {
 			name = "(unnamed)"
 		}
-		_, _ = fmt.Fprintf(output, "  %d) %s  RSSI=%d  ID=%s\n", i+1, name, device.RSSI, device.ID)
+		selectedID := device.ServerID
+		if selectedID == "" {
+			selectedID = device.ID
+		}
+		_, _ = fmt.Fprintf(output, "  %d) %s  RSSI=%d  ID=%s  PLATFORM_ID=%s\n", i+1, name, device.RSSI, selectedID, device.ID)
 	}
 	_, _ = fmt.Fprint(output, "Select server: ")
 	scanner := bufio.NewScanner(input)
@@ -213,7 +227,11 @@ func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Durati
 	if err != nil || selection < 1 || selection > len(devices) {
 		return "", errors.New("invalid server selection")
 	}
-	return devices[selection-1].ID, nil
+	selected := devices[selection-1]
+	if selected.ServerID != "" {
+		return selected.ServerID, nil
+	}
+	return selected.ID, nil
 }
 
 func waitContext(ctx context.Context, duration time.Duration) bool {

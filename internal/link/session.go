@@ -181,7 +181,7 @@ func (s *Session) BindClient(ctx context.Context, conn PacketConn) error {
 				}
 				if len(packet) > 0 && packet[0] == packetReject {
 					retry.Stop()
-					return fmt.Errorf("%w: %s", ErrRejected, string(packet[1:]))
+					return &RejectedError{Reason: string(packet[1:])}
 				}
 				var err error
 				peerExpected, peerCfg, peerMTU, err = decodeHelloAck(packet)

@@ -546,7 +546,7 @@ func TestBusyServerRejectsDifferentSession(t *testing.T) {
 			_ = SendReject(ctx, serverConn, "server busy")
 		}
 	}()
-	if err := client.BindClient(ctx, clientConn); !errors.Is(err, ErrRejected) {
+	if err := client.BindClient(ctx, clientConn); !errors.Is(err, ErrRejected) || RejectionReason(err) != "server busy" {
 		t.Fatalf("BindClient error = %v", err)
 	}
 }

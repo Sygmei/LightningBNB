@@ -102,6 +102,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		benchmark := flags.Bool("benchmark", false, "run the built-in throughput responder instead of forwarding to a TCP target")
 		compression := flags.Bool("compression", false, "allow clients to use compressed multiplexed TCP payloads")
 		preventSleep := flags.Bool("prevent-sleep", false, "prevent automatic system sleep while the server is running")
+		serverIDFile := flags.String("server-id-file", "", "persistent server ID file; defaults to the user configuration directory")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -138,6 +139,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			Benchmark:      *benchmark,
 			Compression:    *compression,
 			PreventSleep:   *preventSleep,
+			ServerIDFile:   *serverIDFile,
 			ErrorOutput:    errorOutput,
 		})
 

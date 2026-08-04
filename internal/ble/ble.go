@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,23 +14,26 @@ import (
 )
 
 const (
-	ServiceUUIDString = "13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0"
-	RXUUIDString      = "13f0b6a1-4746-4c42-8e2f-1f62e4a0b1a0"
-	TXUUIDString      = "13f0b6a2-4746-4c42-8e2f-1f62e4a0b1a0"
-	TestCompanyID     = 0xffff
+	ServiceUUIDString  = "13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0"
+	RXUUIDString       = "13f0b6a1-4746-4c42-8e2f-1f62e4a0b1a0"
+	TXUUIDString       = "13f0b6a2-4746-4c42-8e2f-1f62e4a0b1a0"
+	IdentityUUIDString = "13f0b6a3-4746-4c42-8e2f-1f62e4a0b1a0"
+	TestCompanyID      = 0xffff
 
 	maxPacketMTU = 244
 )
 
 var (
-	ServiceUUID = mustUUID(ServiceUUIDString)
-	RXUUID      = mustUUID(RXUUIDString)
-	TXUUID      = mustUUID(TXUUIDString)
-	marker      = []byte("LBNB1")
+	ServiceUUID  = mustUUID(ServiceUUIDString)
+	RXUUID       = mustUUID(RXUUIDString)
+	TXUUID       = mustUUID(TXUUIDString)
+	IdentityUUID = mustUUID(IdentityUUIDString)
+	marker       = []byte("LBNB1")
 )
 
 type Device struct {
 	ID               string
+	ServerID         string
 	Name             string
 	RSSI             int16
 	LightningBNB     bool
@@ -70,7 +74,19 @@ func (a *Adapter) Enable() error {
 }
 
 func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, error) {
-	return a.scan(ctx, duration, true)
+	devices, err := a.scan(ctx, duration, true)
+	if err != nil {
+		return nil, err
+	}
+	for index := range devices {
+		identifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		serverID, identifyErr := a.identify(identifyCtx, devices[index])
+		cancel()
+		if identifyErr == nil {
+			devices[index].ServerID = serverID.String()
+		}
+	}
+	return devices, nil
 }
 
 func (a *Adapter) ScanAll(ctx context.Context, duration time.Duration) ([]Device, error) {
@@ -205,17 +221,65 @@ func (a *Adapter) Find(ctx context.Context, id string, duration time.Duration) (
 		return Device{}, err
 	}
 	for _, device := range devices {
-		if device.ID == id {
+		if device.ID == id || device.ServerID == strings.ToLower(id) {
 			return device, nil
 		}
 	}
 	return Device{}, fmt.Errorf("LightningBNB server %q not found", id)
 }
 
-func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, error) {
-	if err := a.Enable(); err != nil {
-		return nil, fmt.Errorf("enable Bluetooth: %w", err)
+func (a *Adapter) identify(ctx context.Context, device Device) (ServerID, error) {
+	native, err := a.connectNative(ctx, device)
+	if err != nil {
+		return ServerID{}, err
 	}
+	defer native.Disconnect()
+
+	type result struct {
+		id  ServerID
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		id, err := readServerID(native)
+		done <- result{id: id, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = native.Disconnect()
+		return ServerID{}, ctx.Err()
+	case result := <-done:
+		return result.id, result.err
+	}
+}
+
+func readServerID(native bluetooth.Device) (ServerID, error) {
+	services, err := native.DiscoverServices([]bluetooth.UUID{ServiceUUID})
+	if err != nil {
+		return ServerID{}, err
+	}
+	if len(services) != 1 {
+		return ServerID{}, errors.New("LightningBNB service was not found")
+	}
+	characteristics, err := services[0].DiscoverCharacteristics([]bluetooth.UUID{IdentityUUID})
+	if err != nil {
+		return ServerID{}, err
+	}
+	if len(characteristics) != 1 || characteristics[0].UUID() != IdentityUUID {
+		return ServerID{}, errors.New("LightningBNB server identity characteristic was not found")
+	}
+	var id ServerID
+	n, err := characteristics[0].Read(id[:])
+	if err != nil {
+		return ServerID{}, err
+	}
+	if n != len(id) {
+		return ServerID{}, fmt.Errorf("invalid LightningBNB server identity length %d", n)
+	}
+	return id, nil
+}
+
+func (a *Adapter) connectNative(ctx context.Context, device Device) (bluetooth.Device, error) {
 	type result struct {
 		device bluetooth.Device
 		err    error
@@ -227,7 +291,6 @@ func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, 
 		})
 		connected <- result{device: native, err: err}
 	}()
-	var native bluetooth.Device
 	select {
 	case <-ctx.Done():
 		go func() {
@@ -236,12 +299,22 @@ func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, 
 				_ = result.device.Disconnect()
 			}
 		}()
-		return nil, ctx.Err()
+		return bluetooth.Device{}, ctx.Err()
 	case result := <-connected:
 		if result.err != nil {
-			return nil, fmt.Errorf("connect to %s: %w", device.ID, result.err)
+			return bluetooth.Device{}, fmt.Errorf("connect to %s: %w", device.ID, result.err)
 		}
-		native = result.device
+		return result.device, nil
+	}
+}
+
+func (a *Adapter) Connect(ctx context.Context, device Device) (link.PacketConn, error) {
+	if err := a.Enable(); err != nil {
+		return nil, fmt.Errorf("enable Bluetooth: %w", err)
+	}
+	native, err := a.connectNative(ctx, device)
+	if err != nil {
+		return nil, err
 	}
 
 	services, err := native.DiscoverServices([]bluetooth.UUID{ServiceUUID})
