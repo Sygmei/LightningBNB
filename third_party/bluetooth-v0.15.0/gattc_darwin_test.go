@@ -22,8 +22,20 @@ func TestWaitForWriteWithoutResponseUsesReadySignal(t *testing.T) {
 	}
 }
 
+func TestWaitForWriteWithoutResponseRecoversMissedReadySignal(t *testing.T) {
+	var canSend atomic.Bool
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		canSend.Store(true)
+	}()
+
+	if err := waitForWriteWithoutResponse(canSend.Load, make(chan struct{}), time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWaitForWriteWithoutResponseTimesOut(t *testing.T) {
-	err := waitForWriteWithoutResponse(func() bool { return false }, make(chan struct{}), time.Millisecond)
+	err := waitForWriteWithoutResponse(func() bool { return false }, make(chan struct{}), 5*time.Millisecond)
 	if !errors.Is(err, errWriteWithoutResponseTimeout) {
 		t.Fatalf("timeout error = %v", err)
 	}

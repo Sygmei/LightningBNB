@@ -13,6 +13,8 @@ var (
 	errTimeoutEnableNotifications  = errors.New("timeout on EnableNotifications")
 )
 
+const writeWithoutResponseProbeInterval = time.Millisecond
+
 var (
 	_ GATTCService        = (*DeviceService)(nil)
 	_ GATTCCharacteristic = (*DeviceCharacteristic)(nil)
@@ -244,8 +246,9 @@ func (c DeviceCharacteristic) Write(p []byte) (n int, err error) {
 // call will return before all data has been written. A limited number of such
 // writes can be in flight at any given time.
 // If the peripheral's buffer is full, this method waits for CoreBluetooth's
-// peripheralIsReadyToSendWriteWithoutResponse callback, with a 10-second
-// timeout.
+// peripheralIsReadyToSendWriteWithoutResponse callback. A short readiness
+// probe prevents delayed or missed delegate callbacks from stalling an active
+// transfer, and the overall wait retains a 10-second timeout.
 func (c DeviceCharacteristic) WriteWithoutResponse(p []byte) (int, error) {
 	dev := c.service.device
 
@@ -265,10 +268,13 @@ func (c DeviceCharacteristic) WriteWithoutResponse(p []byte) (int, error) {
 func waitForWriteWithoutResponse(canSend func() bool, ready <-chan struct{}, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	probe := time.NewTicker(writeWithoutResponseProbeInterval)
+	defer probe.Stop()
 
 	for !canSend() {
 		select {
 		case <-ready:
+		case <-probe.C:
 		case <-timer.C:
 			return errWriteWithoutResponseTimeout
 		}
