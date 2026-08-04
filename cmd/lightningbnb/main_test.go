@@ -83,6 +83,16 @@ func TestCompressionFlagIsAvailableOnTransportCommands(t *testing.T) {
 	}
 }
 
+func TestPreventSleepFlagIsAvailableOnServer(t *testing.T) {
+	var output bytes.Buffer
+	if err := run(context.Background(), []string{"server", "--help"}, strings.NewReader(""), &output, &output, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "-prevent-sleep") {
+		t.Fatalf("server help does not list --prevent-sleep: %q", output.String())
+	}
+}
+
 func TestVersion(t *testing.T) {
 	var output bytes.Buffer
 	if err := run(context.Background(), []string{"version"}, strings.NewReader(""), &output, &output, false); err != nil {

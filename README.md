@@ -30,7 +30,7 @@ go build -o lightningbnb ./cmd/lightningbnb
 
 Build on the operating system where the binary will run:
 
-- Linux: install BlueZ and ensure the user can access the system D-Bus Bluetooth interfaces. On Debian/Ubuntu, start with `sudo apt install bluez` and verify `bluetoothctl show` works.
+- Linux: install BlueZ and ensure the user can access the system D-Bus Bluetooth interfaces. On Debian/Ubuntu, start with `sudo apt install bluez` and verify `bluetoothctl show` works. `--prevent-sleep` additionally requires systemd-logind and permission to acquire its sleep and idle inhibitor locks.
 - macOS: install Xcode command-line tools with `xcode-select --install`. The terminal application running LightningBNB must have Bluetooth permission under System Settings → Privacy & Security → Bluetooth.
 - Windows: use a current Go toolchain. Server mode additionally requires a Bluetooth adapter and driver supporting the BLE peripheral/GATT server role.
 
@@ -57,6 +57,12 @@ For compressible traffic such as HTTP, JSON, and LLM token streams, allow compre
 ```sh
 ./lightningbnb server --target-port 8080 --compression
 ./lightningbnb client --device DEVICE_ID --compression
+```
+
+To keep the server computer awake while the bridge is running:
+
+```sh
+./lightningbnb server --target-port 8080 --prevent-sleep
 ```
 
 An uncompressed client can still use a server started with `--compression`. A client requesting compression is rejected explicitly when the server did not enable it.
@@ -94,7 +100,10 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --stats-interval    live traffic stats interval; 0 disables stats (default 1s)
 --benchmark         handle in-memory throughput streams instead of a TCP target
 --compression       allow clients to negotiate compressed TCP payloads
+--prevent-sleep     prevent automatic system sleep while the server is running
 ```
+
+`--prevent-sleep` keeps the system awake for the lifetime of the server process without forcing the display to remain on. The native inhibitor is released on clean shutdown. On Windows, explicit user actions such as selecting Sleep or closing a laptop lid can still suspend the computer.
 
 Client and server print process-relative live traffic totals and rates to stderr. `tx` is forwarded TCP payload sent across Bluetooth and `rx` is payload received from Bluetooth; protocol overhead is excluded. For example:
 

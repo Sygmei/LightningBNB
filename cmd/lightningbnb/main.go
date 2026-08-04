@@ -101,6 +101,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		benchmark := flags.Bool("benchmark", false, "run the built-in throughput responder instead of forwarding to a TCP target")
 		compression := flags.Bool("compression", false, "allow clients to use compressed multiplexed TCP payloads")
+		preventSleep := flags.Bool("prevent-sleep", false, "prevent automatic system sleep while the server is running")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -136,6 +137,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			StatsTUI:       isTerminalWriter(errorOutput),
 			Benchmark:      *benchmark,
 			Compression:    *compression,
+			PreventSleep:   *preventSleep,
 			ErrorOutput:    errorOutput,
 		})
 
@@ -222,7 +224,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, `Usage:
   lightningbnb scan [--timeout 5s] [--all]
   lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--device ID] [--compression]
-  lightningbnb server (--target-port PORT | --benchmark) [--compression]
+  lightningbnb server (--target-port PORT | --benchmark) [--compression] [--prevent-sleep]
   lightningbnb benchmark [--device ID] [--duration 30s] [--compression]
   lightningbnb version`)
 }

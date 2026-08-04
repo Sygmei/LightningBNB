@@ -26,6 +26,7 @@ type ServerConfig struct {
 	StatsTUI       bool
 	Benchmark      bool
 	Compression    bool
+	PreventSleep   bool
 	ErrorOutput    io.Writer
 }
 
@@ -45,6 +46,18 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 		return fmt.Errorf("start Bluetooth server: %w", err)
 	}
 	defer listener.Close()
+	if cfg.PreventSleep {
+		inhibitor, err := acquireSleepInhibitor(ctx)
+		if err != nil {
+			return fmt.Errorf("prevent system sleep: %w", err)
+		}
+		defer func() {
+			if err := inhibitor.Close(); err != nil {
+				logger.Printf("release system sleep inhibitor: %v", err)
+			}
+		}()
+		logger.Printf("automatic system sleep prevention enabled")
+	}
 	if cfg.Benchmark {
 		logger.Printf("advertising %q in benchmark mode", cfg.Name)
 	} else {
