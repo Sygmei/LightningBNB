@@ -188,18 +188,21 @@ func TestSessionPipelinesPacketsBeforeAcknowledgement(t *testing.T) {
 }
 
 func TestSessionBoundsUnacknowledgedTransmissionWindow(t *testing.T) {
-	session, err := NewSession(Config{ReplayWindow: 2 * transmitWindow})
+	const mtu = 244
+	flightWindow := (mtu - 9) * flightWindowPackets
+	session, err := NewSession(Config{ReplayWindow: 2 * flightWindow})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
 
 	session.mu.Lock()
-	session.txBuf = make([]byte, 2*transmitWindow)
+	session.txBuf = make([]byte, 2*flightWindow)
 	session.txNext = uint64(len(session.txBuf))
-	b := &binding{mtu: 244, lastTX: time.Now(), sendNext: session.txBase}
+	b := &binding{mtu: mtu, lastTX: time.Now(), sendNext: session.txBase}
 	now := time.Now()
 	sent := 0
+	packets := 0
 	for {
 		packet := session.nextPacketLocked(b, now)
 		if packet == nil {
@@ -209,11 +212,20 @@ func TestSessionBoundsUnacknowledgedTransmissionWindow(t *testing.T) {
 			t.Fatalf("unexpected packet type %d", packet[0])
 		}
 		sent += len(packet) - 9
+		packets++
 	}
+	if sent != flightWindow || packets != flightWindowPackets {
+		session.mu.Unlock()
+		t.Fatalf("unacknowledged flight = %d bytes in %d packets, want %d bytes in %d packets", sent, packets, flightWindow, flightWindowPackets)
+	}
+	if err := session.handleAckLocked(b, uint64(flightWindow), now); err != nil {
+		session.mu.Unlock()
+		t.Fatal(err)
+	}
+	next := session.nextPacketLocked(b, now)
 	session.mu.Unlock()
-
-	if sent != transmitWindow {
-		t.Fatalf("sent %d unacknowledged bytes, want %d", sent, transmitWindow)
+	if len(next) != mtu || next[0] != packetData || binary.BigEndian.Uint64(next[1:9]) != uint64(flightWindow) {
+		t.Fatalf("first packet after ACK = %x", next)
 	}
 }
 

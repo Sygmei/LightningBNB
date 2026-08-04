@@ -19,16 +19,16 @@ const (
 	DefaultResumeTimeout  = 60 * time.Second
 	DefaultMaxConnections = 32
 
-	retransmitInterval = time.Second
-	heartbeatInterval  = 5 * time.Second
-	heartbeatTimeout   = 15 * time.Second
-	sendTimeout        = 5 * time.Second
-	transmitWindow     = 64 << 10
-	liveWriteWindow    = 16 << 10
-	fastRetransmitACKs = 3
-	ackBatchPackets    = 8
-	ackMaxDelay        = 40 * time.Millisecond
-	sendLoopInterval   = 10 * time.Millisecond
+	retransmitInterval  = time.Second
+	heartbeatInterval   = 5 * time.Second
+	heartbeatTimeout    = 15 * time.Second
+	sendTimeout         = 5 * time.Second
+	liveWriteWindow     = 16 << 10
+	fastRetransmitACKs  = 3
+	ackBatchPackets     = 8
+	flightWindowPackets = ackBatchPackets
+	ackMaxDelay         = 40 * time.Millisecond
+	sendLoopInterval    = 10 * time.Millisecond
 )
 
 var (
@@ -467,15 +467,17 @@ func (s *Session) nextPacketLocked(b *binding, now time.Time) []byte {
 		b.retransmitAt = now.Add(retransmitInterval)
 		b.duplicateACK = 0
 	}
-	windowEnd := s.txNext
-	if windowEnd-s.txBase > transmitWindow {
-		windowEnd = s.txBase + transmitWindow
+	payloadSize := b.mtu - 9
+	if payloadSize < 1 {
+		payloadSize = 1
 	}
+	// Stop after one ACK batch so GATT traffic in the reverse direction gets
+	// airtime. Letting a complete 16 KiB live buffer enter CoreBluetooth at once
+	// can starve the peer's cumulative ACKs and turn the one-second recovery
+	// timer into the effective flow-control mechanism.
+	flightWindow := uint64(payloadSize * flightWindowPackets)
+	windowEnd := min(s.txNext, s.txBase+flightWindow)
 	if b.sendNext < windowEnd {
-		payloadSize := b.mtu - 9
-		if payloadSize < 1 {
-			payloadSize = 1
-		}
 		payloadSize = min(payloadSize, int(windowEnd-b.sendNext))
 		packet := make([]byte, 9+payloadSize)
 		packet[0] = packetData
