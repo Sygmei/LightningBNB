@@ -98,6 +98,7 @@ type Session struct {
 	helloReply       []byte
 	pendingHelloID   SessionID
 	havePendingHello bool
+	stats            transportStats
 
 	readDeadline  time.Time
 	writeDeadline time.Time
@@ -318,13 +319,17 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		seq := binary.BigEndian.Uint64(packet[1:9])
 		payload := packet[9:]
 		accepted := seq == s.rxNext && len(s.rxBuf)+len(payload) <= s.config.ReplayWindow
+		s.stats.dataRXPackets++
 		if accepted {
 			if uint64(len(payload)) > ^uint64(0)-s.rxNext {
 				return ErrSequenceExhausted
 			}
 			s.rxBuf = append(s.rxBuf, payload...)
 			s.rxNext += uint64(len(payload))
+			s.stats.dataRXBytes += uint64(len(payload))
 			s.signalLocked()
+		} else {
+			s.stats.rejectedDataPackets++
 		}
 		s.ackDirty = true
 		if accepted {
@@ -346,6 +351,7 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		if err := s.handleAckLocked(b, binary.BigEndian.Uint64(packet[1:9]), now); err != nil {
 			return err
 		}
+		s.stats.ackRXPackets++
 	case packetPing:
 		if len(packet) != 1 {
 			return ErrHandshake
@@ -424,17 +430,33 @@ func (s *Session) sendLoop(ctx context.Context, b *binding) {
 			continue
 		}
 		sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+		sendStarted := time.Now()
 		err := b.conn.Send(sendCtx, packet)
+		sendDuration := time.Since(sendStarted)
 		cancel()
+		s.mu.Lock()
+		s.stats.sendCalls++
+		s.stats.sendDuration += sendDuration
+		if sendDuration > s.stats.maxSendDuration {
+			s.stats.maxSendDuration = sendDuration
+		}
+		if err == nil {
+			switch packet[0] {
+			case packetData:
+				s.stats.dataTXPackets++
+				s.stats.dataTXBytes += uint64(len(packet) - 9)
+			case packetAck:
+				s.stats.ackTXPackets++
+			}
+		}
+		if s.current == b && err == nil {
+			b.lastTX = time.Now()
+		}
+		s.mu.Unlock()
 		if err != nil {
 			s.failBinding(b, time.Now())
 			return
 		}
-		s.mu.Lock()
-		if s.current == b {
-			b.lastTX = time.Now()
-		}
-		s.mu.Unlock()
 	}
 }
 
@@ -466,6 +488,7 @@ func (s *Session) nextPacketLocked(b *binding, now time.Time) []byte {
 		b.sendNext = s.txBase
 		b.retransmitAt = now.Add(retransmitInterval)
 		b.duplicateACK = 0
+		s.stats.retransmissions++
 	}
 	payloadSize := b.mtu - 9
 	if payloadSize < 1 {
@@ -570,6 +593,7 @@ func (s *Session) handleAckLocked(b *binding, expected uint64, now time.Time) er
 			b.sendNext = s.txBase
 			b.retransmitAt = now.Add(retransmitInterval)
 			b.duplicateACK = 0
+			s.stats.fastRetransmissions++
 			s.signalLocked()
 		}
 	}

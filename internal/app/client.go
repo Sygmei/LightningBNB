@@ -28,6 +28,7 @@ type ClientConfig struct {
 	StatsInterval      time.Duration
 	StatsTUI           bool
 	Compression        bool
+	TransportDebug     bool
 	Benchmark          *BenchmarkClientConfig
 	SuppressListenAddr bool
 	Interactive        bool
@@ -102,6 +103,9 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 			return err
 		}
 		muxSession := mux.NewClientWithCompressionAndTraffic(linkSession, cfg.MaxConnections, cfg.Compression, counter)
+		if cfg.TransportDebug {
+			startTransportDebugReporter(ctx, linkSession, logger.Printf)
+		}
 		clientBridge.SetEndpoint(&bridge.Endpoint{Link: linkSession, Mux: muxSession})
 		logger.Printf("starting BLE session for server %s", deviceID)
 

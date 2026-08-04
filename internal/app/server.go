@@ -26,6 +26,7 @@ type ServerConfig struct {
 	StatsTUI       bool
 	Benchmark      bool
 	Compression    bool
+	TransportDebug bool
 	PreventSleep   bool
 	ServerIDFile   string
 	ErrorOutput    io.Writer
@@ -132,6 +133,9 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 				Compression:    hello.Compression,
 			})
 			currentMux = mux.NewServerWithCompressionAndTraffic(currentLink, cfg.MaxConnections, hello.Compression, counter)
+			if cfg.TransportDebug {
+				startTransportDebugReporter(ctx, currentLink, logger.Printf)
+			}
 			muxForBridge := currentMux
 			if cfg.Benchmark {
 				go func() {

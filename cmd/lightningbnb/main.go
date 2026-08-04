@@ -53,6 +53,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		maxConnections := flags.Int("max-connections", 32, "maximum active and queued TCP connections")
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		compression := flags.Bool("compression", false, "compress multiplexed TCP payloads; server must allow compression")
+		transportDebug := flags.Bool("transport-debug", false, "log reliable-link packet and latency diagnostics")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -84,6 +85,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			StatsInterval:  *statsInterval,
 			StatsTUI:       isTerminalWriter(errorOutput),
 			Compression:    *compression,
+			TransportDebug: *transportDebug,
 			Interactive:    interactive,
 			Input:          input,
 			Output:         output,
@@ -101,6 +103,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		benchmark := flags.Bool("benchmark", false, "run the built-in throughput responder instead of forwarding to a TCP target")
 		compression := flags.Bool("compression", false, "allow clients to use compressed multiplexed TCP payloads")
+		transportDebug := flags.Bool("transport-debug", false, "log reliable-link packet and latency diagnostics")
 		preventSleep := flags.Bool("prevent-sleep", false, "prevent automatic system sleep while the server is running")
 		serverIDFile := flags.String("server-id-file", "", "persistent server ID file; defaults to the user configuration directory")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -138,6 +141,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			StatsTUI:       isTerminalWriter(errorOutput),
 			Benchmark:      *benchmark,
 			Compression:    *compression,
+			TransportDebug: *transportDebug,
 			PreventSleep:   *preventSleep,
 			ServerIDFile:   *serverIDFile,
 			ErrorOutput:    errorOutput,
@@ -154,6 +158,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		connections := flags.Int("connections", 1, "parallel benchmark streams per direction")
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		compression := flags.Bool("compression", false, "compress benchmark payloads; server must allow compression")
+		transportDebug := flags.Bool("transport-debug", false, "log reliable-link packet and latency diagnostics")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -182,6 +187,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			StatsInterval:      0,
 			StatsTUI:           isTerminalWriter(errorOutput),
 			Compression:        *compression,
+			TransportDebug:     *transportDebug,
 			SuppressListenAddr: true,
 			Benchmark: &app.BenchmarkClientConfig{
 				Direction:     *direction,

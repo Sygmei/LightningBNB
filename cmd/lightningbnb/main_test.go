@@ -83,6 +83,20 @@ func TestCompressionFlagIsAvailableOnTransportCommands(t *testing.T) {
 	}
 }
 
+func TestTransportDebugFlagIsAvailableOnTransportCommands(t *testing.T) {
+	for _, command := range []string{"client", "server", "benchmark"} {
+		t.Run(command, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := run(context.Background(), []string{command, "--help"}, strings.NewReader(""), &output, &output, false); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), "-transport-debug") {
+				t.Fatalf("%s help does not list --transport-debug: %q", command, output.String())
+			}
+		})
+	}
+}
+
 func TestPreventSleepFlagIsAvailableOnServer(t *testing.T) {
 	var output bytes.Buffer
 	if err := run(context.Background(), []string{"server", "--help"}, strings.NewReader(""), &output, &output, false); err != nil {

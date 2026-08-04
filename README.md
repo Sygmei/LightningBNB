@@ -91,6 +91,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --max-connections   active plus waiting TCP connection limit (default 32)
 --stats-interval    live traffic stats interval; 0 disables stats (default 1s)
 --compression       compress TCP payloads; the server must allow compression
+--transport-debug   log reliable-link packet, ACK, retransmission, and send-latency diagnostics
 ```
 
 ### Server flags
@@ -107,6 +108,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --compression       allow clients to negotiate compressed TCP payloads
 --prevent-sleep     prevent automatic system sleep while the server is running
 --server-id-file    persistent server ID file (default: OS user configuration directory)
+--transport-debug   log reliable-link packet, ACK, retransmission, and send-latency diagnostics
 ```
 
 `--prevent-sleep` keeps the system awake for the lifetime of the server process without forcing the display to remain on. The native inhibitor is released on clean shutdown. On Windows, explicit user actions such as selecting Sleep or closing a laptop lid can still suspend the computer.
