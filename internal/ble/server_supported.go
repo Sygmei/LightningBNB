@@ -141,6 +141,7 @@ type serverPacketConn struct {
 	done     chan struct{}
 	once     sync.Once
 	onClose  func()
+	sendMu   sync.Mutex
 }
 
 func newServerPacketConn(tx *bluetooth.Characteristic) *serverPacketConn {
@@ -184,6 +185,15 @@ func (c *serverPacketConn) Send(ctx context.Context, packet []byte) error {
 	if len(packet) > maxPacketMTU {
 		return errors.New("BLE packet exceeds maximum MTU")
 	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return io.ErrClosedPipe
+	default:
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

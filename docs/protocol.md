@@ -48,7 +48,15 @@ The optional capability byte is omitted when zero, preserving the original boots
 
 Each direction is independent. A receiver delivers `DATA` only at its next expected offset, suppresses duplicates, and retains non-overlapping out-of-order packets inside the bounded receive window until a gap is filled. It returns a cumulative `ACK` for the next contiguous byte. Under continuous traffic, ACKs are coalesced after up to eight packets or 40 milliseconds; gaps, duplicates, and receive pressure trigger an immediate ACK. A sender starts with eight MTU-sized `DATA` packets in flight, grows its window additively to at most 32 packets while cumulative acknowledgements advance, and halves it on timeout or fast retransmission. This keeps the link pipelined without returning to long one-directional GATT bursts. It retains unacknowledged data in a 1 MiB replay window and restarts from the oldest outstanding fragment after one second or three duplicate acknowledgements. While connected, new writes are limited to a 16 KiB live window so multiplexing control frames cannot sit behind a long bulk-data train. Offline buffering can still use the full replay window.
 
-An idle peer emits `PING` after five seconds. Fifteen seconds without a received packet marks the physical link detached; the resume deadline is measured from the last received packet. BLE connection callbacks and read/write errors may detect detachment sooner.
+An idle peer emits an active `PING` after five seconds without receiving a
+packet and expects a response within three seconds. Each unanswered probe is
+counted; three consecutive failures mark the physical link detached (roughly
+14 seconds after the last received packet). Any valid packet, including
+`PONG`, clears the failure count. The existing client/server reconnect loops
+then rebind the same in-memory session, preserving TCP streams until the
+resume deadline measured from detachment. A process restart is not required
+and would intentionally discard that resumable state. BLE connection callbacks
+and read/write errors may detect detachment sooner.
 
 `CLOSE` ends the logical session. A detached transport does not emit `CLOSE`; it waits for reattachment until the negotiated timeout.
 

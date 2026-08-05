@@ -103,6 +103,13 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 			return err
 		}
 		muxSession := mux.NewClientWithCompressionAndTraffic(linkSession, cfg.MaxConnections, cfg.Compression, counter)
+		if cfg.StatsTUI {
+			console.SetLinkSession(linkSession)
+			startLinkHealthReporter(ctx, linkSession, func(snapshot link.TransportSnapshot) {
+				bridgeSnapshot := clientBridge.Snapshot()
+				console.ReportLinkAndBufferFor(linkSession, snapshot, bridgeSnapshot.WaitingConnections, bridgeSnapshot.ActiveConnections, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
+			})
+		}
 		if cfg.TransportDebug {
 			startTransportDebugReporter(ctx, linkSession, logger.Printf)
 		}

@@ -22,11 +22,21 @@ type Endpoint struct {
 	Mux  *mux.Session
 }
 
+// Snapshot reports local TCP pressure. ActiveConnections includes both
+// connections waiting for a BLE endpoint and connections already proxied;
+// WaitingConnections is the subset whose socket reads are intentionally
+// paused while the link is unavailable.
+type Snapshot struct {
+	ActiveConnections  int
+	WaitingConnections int
+}
+
 type Client struct {
 	resumeTimeout time.Duration
 	limit         chan struct{}
 	logf          func(string, ...any)
 	traffic       *traffic.Counter
+	waiting       int
 
 	mu       sync.Mutex
 	endpoint *Endpoint
@@ -74,6 +84,13 @@ func (c *Client) SetEndpoint(endpoint *Endpoint) {
 	}
 }
 
+func (c *Client) Snapshot() Snapshot {
+	c.mu.Lock()
+	waiting := c.waiting
+	c.mu.Unlock()
+	return Snapshot{ActiveConnections: len(c.limit), WaitingConnections: waiting}
+}
+
 func (c *Client) Serve(ctx context.Context, listener net.Listener) error {
 	go func() {
 		<-ctx.Done()
@@ -102,7 +119,13 @@ func (c *Client) handle(parent context.Context, conn net.Conn) {
 	defer conn.Close()
 	ctx, cancel := context.WithTimeout(parent, c.resumeTimeout)
 	defer cancel()
+	c.mu.Lock()
+	c.waiting++
+	c.mu.Unlock()
 	endpoint, err := c.waitReady(ctx)
+	c.mu.Lock()
+	c.waiting--
+	c.mu.Unlock()
 	if err != nil {
 		c.logf("closing queued connection from %s: %v", conn.RemoteAddr(), err)
 		return

@@ -133,6 +133,14 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 				Compression:    hello.Compression,
 			})
 			currentMux = mux.NewServerWithCompressionAndTraffic(currentLink, cfg.MaxConnections, hello.Compression, counter)
+			if cfg.StatsTUI {
+				console.SetLinkSession(currentLink)
+				sessionMux := currentMux
+				startLinkHealthReporter(ctx, currentLink, func(snapshot link.TransportSnapshot) {
+					muxSnapshot := sessionMux.Snapshot()
+					console.ReportLinkAndBufferFor(currentLink, snapshot, muxSnapshot.PendingAccepts, muxSnapshot.Streams, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
+				})
+			}
 			if cfg.TransportDebug {
 				startTransportDebugReporter(ctx, currentLink, logger.Printf)
 			}

@@ -10,6 +10,27 @@ import (
 
 const transportDebugInterval = time.Second
 
+func startLinkHealthReporter(parent context.Context, session *link.Session, report func(link.TransportSnapshot)) {
+	if session == nil || report == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			report(session.TransportSnapshot())
+			select {
+			case <-parent.Done():
+				return
+			case <-session.Done():
+				report(session.TransportSnapshot())
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
 func startTransportDebugReporter(parent context.Context, session *link.Session, logf func(string, ...any)) {
 	if session == nil || logf == nil {
 		return
@@ -45,7 +66,7 @@ func formatTransportDebug(current, previous link.TransportSnapshot) string {
 		averageSend = sendDuration / time.Duration(sendCalls)
 	}
 	return fmt.Sprintf(
-		"mtu=%d data-tx=%dpkts/%s data-rx=%dpkts/%s ack-tx=%d ack-rx=%d rtx=%d fast-rtx=%d ooo=%d rejected=%d send-api-avg=%s send-api-max=%s outstanding=%s flight=%s cwnd=%dpkts rx-buffer=%s",
+		"mtu=%d data-tx=%dpkts/%s data-rx=%dpkts/%s ack-tx=%d ack-rx=%d hb-tx=%d hb-rx=%d hb-fail=%d rtx=%d fast-rtx=%d ooo=%d rejected=%d send-api-avg=%s send-api-max=%s outstanding=%s flight=%s cwnd=%dpkts rx-buffer=%s",
 		current.PacketMTU,
 		delta(current.DataTXPackets, previous.DataTXPackets),
 		formatBytes(float64(delta(current.DataTXBytes, previous.DataTXBytes))),
@@ -53,6 +74,9 @@ func formatTransportDebug(current, previous link.TransportSnapshot) string {
 		formatBytes(float64(delta(current.DataRXBytes, previous.DataRXBytes))),
 		delta(current.ACKTXPackets, previous.ACKTXPackets),
 		delta(current.ACKRXPackets, previous.ACKRXPackets),
+		delta(current.HeartbeatTX, previous.HeartbeatTX),
+		delta(current.HeartbeatRX, previous.HeartbeatRX),
+		delta(current.HeartbeatFailures, previous.HeartbeatFailures),
 		delta(current.Retransmissions, previous.Retransmissions),
 		delta(current.FastRetransmissions, previous.FastRetransmissions),
 		delta(current.OutOfOrderDataPackets, previous.OutOfOrderDataPackets),

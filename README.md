@@ -150,6 +150,15 @@ The benchmark uses one stream per direction by default. `--direction upload`, `-
 
 When stderr is an interactive terminal, live traffic statistics appear in an in-place dashboard instead of adding one log line per interval. Diagnostics are printed above the dashboard without disrupting it. Redirected stderr retains the line-oriented format for logs and scripts; set `NO_COLOR=1` to disable dashboard colors.
 
+The dashboard includes a link-health dot: green `● link HEALTHY` means the BLE
+binding is receiving traffic or heartbeat responses, amber `● link CHECKING`
+means a heartbeat is awaiting confirmation, and red `● link OFFLINE` means the
+session is currently being rebound or has not connected yet.
+
+Its `BUF` row reports queued requests, active requests/streams, and the bytes
+currently retained in the resumable link buffers. Queued client sockets are not
+read until the link is ready, so this row makes backpressure visible.
+
 When compression is negotiated, the dashboard adds TX and RX rows comparing the original DATA payload totals with their encoded compressed totals and the resulting percentage saved. These compression totals include the one-byte DATA encoding marker, but exclude multiplexing, link, GATT, Bluetooth, and retransmission overhead.
 
 Benchmark totals are receiver-confirmed payload, not bytes merely accepted into local TCP, multiplexing, or replay buffers. Each stream keeps at most 256 KiB of unconfirmed benchmark data in flight and exchanges cumulative acknowledgements every 16 KiB without counting them as payload. Because the two dashboards use independent one-second sampling clocks, a receiver can briefly show a higher peak or lead its sender by the still-unconfirmed portion of that window; compare the whole-run average for throughput.
@@ -167,6 +176,15 @@ Use `Ctrl+C` to close the listener, BLE resources, active streams, and target so
 When BLE disappears, active local and target TCP sockets remain open. New local sockets are accepted up to the connection limit but are not read, so the operating-system TCP buffer supplies backpressure. Both sides retain at most 1 MiB of unacknowledged link data per direction.
 
 If the same in-memory session reconnects before the effective resume timeout (the lower value configured by the two peers), acknowledged offsets are reconciled and only missing bytes are replayed. If recovery expires or either process restarts, all sockets in that session close and the client starts looking for a fresh session.
+
+The link also performs an active liveness check while idle: a `PING` is sent
+after five seconds without received traffic, each probe allows three seconds
+for a response, and three consecutive missed probes detach the BLE binding.
+The client and server then reuse their normal discovery/advertising loops to
+rebind the same session. This is a transport rebind, not a process restart;
+the configured resume timeout still controls how long queued and active TCP
+connections are retained. Transport diagnostics expose `hb-tx`, `hb-rx`, and
+`hb-fail` counters when `--transport-debug` is enabled.
 
 One server accepts one BLE client at a time. That client may carry up to 32 TCP streams by default.
 

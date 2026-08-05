@@ -21,7 +21,8 @@ const (
 
 	retransmitInterval         = time.Second
 	heartbeatInterval          = 5 * time.Second
-	heartbeatTimeout           = 15 * time.Second
+	heartbeatResponseTimeout   = 3 * time.Second
+	heartbeatFailureLimit      = 3
 	sendTimeout                = 5 * time.Second
 	liveWriteWindow            = 16 << 10
 	fastRetransmitACKs         = 3
@@ -63,16 +64,19 @@ func (cfg Config) normalized() Config {
 }
 
 type binding struct {
-	conn          PacketConn
-	gen           uint64
-	mtu           int
-	cancel        context.CancelFunc
-	lastRX        time.Time
-	lastTX        time.Time
-	sendNext      uint64
-	retransmitAt  time.Time
-	duplicateACK  int
-	flightPackets int
+	conn              PacketConn
+	gen               uint64
+	mtu               int
+	cancel            context.CancelFunc
+	lastRX            time.Time
+	lastTX            time.Time
+	heartbeatPending  bool
+	heartbeatSentAt   time.Time
+	heartbeatFailures int
+	sendNext          uint64
+	retransmitAt      time.Time
+	duplicateACK      int
+	flightPackets     int
 }
 
 // Session is a reliable, ordered, resumable byte stream over replaceable BLE
@@ -293,6 +297,7 @@ func (s *Session) attach(conn PacketConn, mtu int) error {
 	}
 	go s.receiveLoop(ctx, b)
 	go s.sendLoop(ctx, b)
+	go s.heartbeatLoop(ctx, b)
 	return nil
 }
 
@@ -325,6 +330,10 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		return nil
 	}
 	b.lastRX = now
+	// Any valid packet proves that the ATT path is still alive. Clear an
+	// outstanding probe even when the peer is sending data rather than PONG.
+	b.heartbeatPending = false
+	b.heartbeatFailures = 0
 	switch packet[0] {
 	case packetData:
 		if len(packet) <= 9 {
@@ -371,6 +380,7 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 		if len(packet) != 1 {
 			return ErrHandshake
 		}
+		s.stats.heartbeatRX++
 	case packetClose:
 		go s.closeWithError(io.EOF)
 	case packetHelloID:
@@ -480,12 +490,6 @@ func (s *Session) sendLoop(ctx context.Context, b *binding) {
 		}
 		notify := s.notify
 		now := time.Now()
-		if now.Sub(b.lastRX) >= heartbeatTimeout {
-			detachedAt := b.lastRX
-			s.mu.Unlock()
-			s.failBinding(b, detachedAt)
-			return
-		}
 		packet := s.nextPacketLocked(b, now)
 		s.mu.Unlock()
 
@@ -587,10 +591,89 @@ func (s *Session) nextPacketLocked(b *binding, now time.Time) []byte {
 		b.sendNext += uint64(payloadSize)
 		return packet
 	}
-	if now.Sub(b.lastTX) >= heartbeatInterval {
-		return []byte{packetPing}
-	}
 	return nil
+}
+
+// heartbeatLoop actively probes an otherwise idle binding. This is separate
+// from sendLoop so a GATT implementation that stops delivering notifications
+// or blocks a data write cannot also prevent liveness detection. A successful
+// PONG (or any other valid packet) resets the failure count. After three
+// unanswered probes the binding is detached and the application reconnect
+// loop can attach a replacement without discarding the resumable session.
+func (s *Session) heartbeatLoop(ctx context.Context, b *binding) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		now := time.Now()
+		s.mu.Lock()
+		if s.current != b || s.closed {
+			s.mu.Unlock()
+			return
+		}
+		probe, detach := s.heartbeatCheckLocked(b, now)
+		s.mu.Unlock()
+		if detach {
+			s.failBinding(b, now)
+			return
+		}
+		if !probe {
+			continue
+		}
+
+		sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+		sendStarted := time.Now()
+		err := b.conn.Send(sendCtx, []byte{packetPing})
+		sendDuration := time.Since(sendStarted)
+		cancel()
+		s.mu.Lock()
+		s.stats.sendCalls++
+		s.stats.sendDuration += sendDuration
+		if sendDuration > s.stats.maxSendDuration {
+			s.stats.maxSendDuration = sendDuration
+		}
+		if err == nil {
+			s.stats.heartbeatTX++
+			if s.current == b {
+				b.lastTX = time.Now()
+			}
+		}
+		s.mu.Unlock()
+		if err != nil {
+			s.failBinding(b, time.Now())
+			return
+		}
+	}
+}
+
+// heartbeatCheckLocked decides whether the next probe should be sent. It is
+// kept deterministic so stalled-link behavior can be tested without waiting
+// through real five-second intervals.
+func (s *Session) heartbeatCheckLocked(b *binding, now time.Time) (probe, detach bool) {
+	if now.Sub(b.lastRX) < heartbeatInterval {
+		b.heartbeatPending = false
+		b.heartbeatFailures = 0
+		return false, false
+	}
+	if b.heartbeatPending {
+		if now.Sub(b.heartbeatSentAt) < heartbeatResponseTimeout {
+			return false, false
+		}
+		b.heartbeatPending = false
+		b.heartbeatFailures++
+		s.stats.heartbeatFailures++
+		if b.heartbeatFailures >= heartbeatFailureLimit {
+			return false, true
+		}
+	}
+	b.heartbeatPending = true
+	b.heartbeatSentAt = now
+	return true, false
 }
 
 func (s *Session) failBinding(b *binding, detachedAt time.Time) {

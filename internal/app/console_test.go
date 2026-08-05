@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sygmei/LightningBNB/internal/link"
 	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
@@ -132,6 +133,29 @@ func TestTrafficDashboardShowsCompressionTotals(t *testing.T) {
 		if !strings.Contains(lines, want) {
 			t.Errorf("compression dashboard does not contain %q: %q", want, lines)
 		}
+	}
+}
+
+func TestTrafficDashboardShowsLinkHealthDot(t *testing.T) {
+	console := newRuntimeConsole(&bytes.Buffer{}, true)
+	console.color = false
+	console.ReportTraffic(traffic.Snapshot{}, traffic.Snapshot{}, time.Second, false)
+	console.ReportLinkHealth(link.TransportSnapshot{Bound: true})
+	lines := strings.Join(console.lines, "\n")
+	if !strings.Contains(lines, "● link HEALTHY") {
+		t.Fatalf("healthy link indicator = %q", lines)
+	}
+	console.ReportLinkHealth(link.TransportSnapshot{Bound: true, HeartbeatPending: true})
+	if !strings.Contains(strings.Join(console.lines, "\n"), "● link CHECKING") {
+		t.Fatalf("checking link indicator = %q", strings.Join(console.lines, "\n"))
+	}
+	console.ReportLinkHealth(link.TransportSnapshot{})
+	if !strings.Contains(strings.Join(console.lines, "\n"), "● link OFFLINE") {
+		t.Fatalf("offline link indicator = %q", strings.Join(console.lines, "\n"))
+	}
+	console.ReportLinkAndBufferFor(nil, link.TransportSnapshot{Bound: true}, 2, 5, 4096)
+	if got := strings.Join(console.lines, "\n"); !strings.Contains(got, "BUF queued 2    reqs active 5    data 4.0 KiB") {
+		t.Fatalf("buffer indicator = %q", got)
 	}
 }
 

@@ -488,6 +488,68 @@ func TestSessionAcknowledgementDeadline(t *testing.T) {
 	}
 }
 
+func TestSessionHeartbeatRequiresThreeMisses(t *testing.T) {
+	session, err := NewSession(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	now := time.Now()
+	b := &binding{lastRX: now}
+
+	session.mu.Lock()
+	probe, detach := session.heartbeatCheckLocked(b, now.Add(heartbeatInterval))
+	if !probe || detach || !b.heartbeatPending {
+		session.mu.Unlock()
+		t.Fatalf("first heartbeat check = probe %t, detach %t, binding=%+v", probe, detach, b)
+	}
+	for failure := 1; failure <= heartbeatFailureLimit; failure++ {
+		checkAt := b.heartbeatSentAt.Add(heartbeatResponseTimeout)
+		probe, detach = session.heartbeatCheckLocked(b, checkAt)
+		if failure < heartbeatFailureLimit {
+			if !probe || detach || b.heartbeatFailures != failure {
+				session.mu.Unlock()
+				t.Fatalf("heartbeat failure %d = probe %t, detach %t, binding=%+v", failure, probe, detach, b)
+			}
+		} else if probe || !detach || b.heartbeatFailures != heartbeatFailureLimit {
+			session.mu.Unlock()
+			t.Fatalf("final heartbeat check = probe %t, detach %t, binding=%+v", probe, detach, b)
+		}
+	}
+	if session.stats.heartbeatFailures != heartbeatFailureLimit {
+		session.mu.Unlock()
+		t.Fatalf("heartbeat failures = %d, want %d", session.stats.heartbeatFailures, heartbeatFailureLimit)
+	}
+	session.mu.Unlock()
+}
+
+func TestSessionHeartbeatPongClearsMissedProbes(t *testing.T) {
+	session, err := NewSession(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		session.mu.Lock()
+		session.current = nil
+		session.mu.Unlock()
+		_ = session.Close()
+	}()
+	now := time.Now()
+	b := &binding{mtu: 20, lastRX: now, heartbeatPending: true, heartbeatSentAt: now, heartbeatFailures: 2}
+	session.mu.Lock()
+	session.current = b
+	session.mu.Unlock()
+
+	if err := session.handlePacket(b, []byte{packetPong}); err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if b.heartbeatPending || b.heartbeatFailures != 0 || b.lastRX.Before(now) || session.stats.heartbeatRX != 1 {
+		t.Fatalf("heartbeat state after PONG = pending=%t failures=%d lastRX=%v stats=%+v", b.heartbeatPending, b.heartbeatFailures, b.lastRX, session.stats)
+	}
+}
+
 func TestCompressionCapabilityUsesOptionalBootstrapByte(t *testing.T) {
 	var id SessionID
 	_, legacyHello := encodeHello(id, 0, Config{}.normalized(), 244)

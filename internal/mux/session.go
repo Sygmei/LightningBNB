@@ -44,6 +44,14 @@ type Session struct {
 	once    sync.Once
 }
 
+// Snapshot reports multiplexed stream pressure for diagnostics and the live
+// console. PendingAccepts are OPEN frames waiting for the server bridge to
+// accept them; Streams includes active and opening streams.
+type Snapshot struct {
+	Streams        int
+	PendingAccepts int
+}
+
 func NewClient(conn net.Conn, maxStreams int) *Session {
 	return newSession(conn, true, maxStreams, false, nil)
 }
@@ -157,6 +165,12 @@ func (s *Session) NumStreams() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.streams)
+}
+
+func (s *Session) Snapshot() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Snapshot{Streams: len(s.streams), PendingAccepts: len(s.accept)}
 }
 
 func (s *Session) Close() error {

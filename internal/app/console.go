@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Sygmei/LightningBNB/internal/link"
 	"github.com/Sygmei/LightningBNB/internal/traffic"
 )
 
@@ -28,7 +29,24 @@ type runtimeConsole struct {
 	lines            []string
 	peakRate         float64
 	peakCombinedRate float64
+	linkHealth       linkHealthState
+	bufferState      bufferState
+	healthSession    *link.Session
 	closed           bool
+}
+
+type linkHealthState struct {
+	known            bool
+	bound            bool
+	heartbeatPending bool
+	failures         int
+}
+
+type bufferState struct {
+	known  bool
+	queued int
+	active int
+	bytes  uint64
 }
 
 func newRuntimeConsole(output io.Writer, tui bool) *runtimeConsole {
@@ -92,6 +110,95 @@ func (c *runtimeConsole) ReportTraffic(current, previous traffic.Snapshot, elaps
 	_ = c.drawLocked()
 }
 
+// ReportLinkHealth updates the small status indicator in the live dashboard.
+// It intentionally does not affect line-oriented output when the TUI is off.
+func (c *runtimeConsole) SetLinkSession(session *link.Session) {
+	if !c.tui {
+		return
+	}
+	c.mu.Lock()
+	c.healthSession = session
+	c.mu.Unlock()
+}
+
+func (c *runtimeConsole) ReportLinkHealth(snapshot link.TransportSnapshot) {
+	c.reportLinkHealth(nil, snapshot)
+}
+
+func (c *runtimeConsole) ReportLinkHealthFor(session *link.Session, snapshot link.TransportSnapshot) {
+	c.reportLinkHealth(session, snapshot)
+}
+
+func (c *runtimeConsole) ReportBuffer(queued, active int, bytes uint64) {
+	c.reportBuffer(nil, queued, active, bytes)
+}
+
+func (c *runtimeConsole) ReportBufferFor(session *link.Session, queued, active int, bytes uint64) {
+	c.reportBuffer(session, queued, active, bytes)
+}
+
+func (c *runtimeConsole) ReportLinkAndBufferFor(session *link.Session, snapshot link.TransportSnapshot, queued, active int, bytes uint64) {
+	if !c.tui {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || (session != nil && c.healthSession != session) {
+		return
+	}
+	c.linkHealth = linkHealthState{
+		known:            true,
+		bound:            snapshot.Bound,
+		heartbeatPending: snapshot.HeartbeatPending,
+		failures:         snapshot.HeartbeatConsecutiveFailures,
+	}
+	c.bufferState = bufferState{known: true, queued: queued, active: active, bytes: bytes}
+	if len(c.lines) > 0 {
+		c.clearLocked()
+		c.lines = c.trafficLinesFromCurrent(c.lines)
+		_ = c.drawLocked()
+	}
+}
+
+func (c *runtimeConsole) reportBuffer(session *link.Session, queued, active int, bytes uint64) {
+	if !c.tui {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || (session != nil && c.healthSession != session) {
+		return
+	}
+	c.bufferState = bufferState{known: true, queued: queued, active: active, bytes: bytes}
+	if len(c.lines) > 0 {
+		c.clearLocked()
+		c.lines = c.trafficLinesFromCurrent(c.lines)
+		_ = c.drawLocked()
+	}
+}
+
+func (c *runtimeConsole) reportLinkHealth(session *link.Session, snapshot link.TransportSnapshot) {
+	if !c.tui {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || (session != nil && c.healthSession != session) {
+		return
+	}
+	c.linkHealth = linkHealthState{
+		known:            true,
+		bound:            snapshot.Bound,
+		heartbeatPending: snapshot.HeartbeatPending,
+		failures:         snapshot.HeartbeatConsecutiveFailures,
+	}
+	if len(c.lines) > 0 {
+		c.clearLocked()
+		c.lines = c.trafficLinesFromCurrent(c.lines)
+		_ = c.drawLocked()
+	}
+}
+
 func (c *runtimeConsole) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -115,6 +222,8 @@ func (c *runtimeConsole) trafficLines(current traffic.Snapshot, txRate, rxRate f
 	txBar := c.rateBar(txRate)
 	rxBar := c.rateBar(rxRate)
 	top := dashboardTop(state)
+	healthLine := c.healthLine()
+	bufferLine := c.bufferLine()
 	txLine := dashboardLine(fmt.Sprintf("TX  total %-10s now %-11s %s", formatBytes(float64(current.TX)), formatBytes(txRate)+"/s", txBar))
 	rxLine := dashboardLine(fmt.Sprintf("RX  total %-10s now %-11s %s", formatBytes(float64(current.RX)), formatBytes(rxRate)+"/s", rxBar))
 	if c.color {
@@ -126,6 +235,8 @@ func (c *runtimeConsole) trafficLines(current traffic.Snapshot, txRate, rxRate f
 	}
 	lines := []string{
 		top,
+		healthLine,
+		bufferLine,
 		txLine,
 		rxLine,
 	}
@@ -144,6 +255,51 @@ func (c *runtimeConsole) trafficLines(current traffic.Snapshot, txRate, rxRate f
 		c.paint("╰"+strings.Repeat("─", trafficContentWidth+2)+"╯", "1;36"),
 	)
 	return lines
+}
+
+func (c *runtimeConsole) trafficLinesFromCurrent(previous []string) []string {
+	// The current traffic values are already represented in the existing rows;
+	// replace only the status rows so a diagnostic update does not reset rates
+	// or peak bars between traffic samples.
+	if len(previous) < 3 {
+		return previous
+	}
+	updated := append([]string(nil), previous...)
+	updated[1] = c.healthLine()
+	updated[2] = c.bufferLine()
+	return updated
+}
+
+func (c *runtimeConsole) healthLine() string {
+	dot, label, color := "●", "UNKNOWN", "90"
+	if c.linkHealth.known {
+		switch {
+		case !c.linkHealth.bound:
+			label, color = "OFFLINE", "31"
+		case c.linkHealth.heartbeatPending || c.linkHealth.failures > 0:
+			label, color = "CHECKING", "33"
+		default:
+			label, color = "HEALTHY", "32"
+		}
+	}
+	content := fmt.Sprintf("%s link %-9s", dot, label)
+	line := dashboardLine(content)
+	if c.color {
+		line = strings.Replace(line, dot, c.paint(dot, color), 1)
+	}
+	return line
+}
+
+func (c *runtimeConsole) bufferLine() string {
+	if !c.bufferState.known {
+		return dashboardLine("BUF queued -- reqs active -- data --")
+	}
+	content := fmt.Sprintf("BUF queued %-4d reqs active %-4d data %-10s", c.bufferState.queued, c.bufferState.active, formatBytes(float64(c.bufferState.bytes)))
+	line := dashboardLine(content)
+	if c.color {
+		line = strings.Replace(line, "BUF", c.paint("BUF", "1;35"), 1)
+	}
+	return line
 }
 
 func compressionLine(direction string, uncompressed, compressed uint64) string {
