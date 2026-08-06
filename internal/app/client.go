@@ -62,6 +62,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	adapter := ble.NewAdapter()
 	deviceID := cfg.DeviceID
 	var selectedDevice *ble.Device
+	var lastDevice *ble.Device
 	if deviceID == "" {
 		if !cfg.Interactive {
 			return errors.New("--device is required when stdin is not an interactive terminal")
@@ -151,6 +152,13 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				device, err = adapter.Find(ctx, deviceID, cfg.ScanTimeout)
 				if err != nil {
 					logger.Printf("discover server: %v", err)
+					if lastDevice != nil {
+						cached := *lastDevice
+						lastDevice = nil
+						selectedDevice = &cached
+						logger.Printf("trying last known platform device %s", cached.ID)
+						continue
+					}
 					if !waitContext(ctx, time.Second) {
 						break
 					}
@@ -172,6 +180,9 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				handshakeCtx, cancelHandshake := context.WithTimeout(ctx, 15*time.Second)
 				err = linkSession.BindClient(handshakeCtx, packetConn)
 				cancelHandshake()
+			}
+			if err == nil {
+				lastDevice = &device
 			}
 			if err != nil {
 				if packetConn != nil {

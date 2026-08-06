@@ -237,33 +237,36 @@ func (a *Adapter) AddService(s *Service) error {
 		return err
 	}
 
-	return serviceProvider.StartAdvertisingWithParameters(params)
+	if err := serviceProvider.StartAdvertisingWithParameters(params); err != nil {
+		return err
+	}
+	a.serviceProvidersMu.Lock()
+	if a.serviceProviders == nil {
+		a.serviceProviders = make(map[syscall.GUID]*genericattributeprofile.GattServiceProvider)
+	}
+	serviceUUID := syscallUUIDFromUUID(s.UUID)
+	if previous := a.serviceProviders[serviceUUID]; previous != nil {
+		_ = previous.StopAdvertising()
+		previous.Release()
+	}
+	a.serviceProviders[serviceUUID] = serviceProvider
+	a.serviceProvidersMu.Unlock()
+	return nil
 }
 
 // RemoveService stops advertising the service and removes it.
 func (a *Adapter) RemoveService(s *Service) error {
-	gattServiceOp, err := genericattributeprofile.GattServiceProviderCreateAsync(syscallUUIDFromUUID(s.UUID))
-
-	if err != nil {
-		return err
+	serviceUUID := syscallUUIDFromUUID(s.UUID)
+	a.serviceProvidersMu.Lock()
+	serviceProvider := a.serviceProviders[serviceUUID]
+	delete(a.serviceProviders, serviceUUID)
+	a.serviceProvidersMu.Unlock()
+	if serviceProvider == nil {
+		return nil
 	}
-
-	if err = awaitAsyncOperation(gattServiceOp, genericattributeprofile.SignatureGattServiceProviderResult); err != nil {
-		return err
-	}
-
-	res, err := gattServiceOp.GetResults()
-	if err != nil {
-		return err
-	}
-
-	serviceProviderResult := (*genericattributeprofile.GattServiceProviderResult)(res)
-	serviceProvider, err := serviceProviderResult.GetServiceProvider()
-	if err != nil {
-		return err
-	}
-
-	return serviceProvider.StopAdvertising()
+	err := serviceProvider.StopAdvertising()
+	serviceProvider.Release()
+	return err
 }
 
 // Write replaces the characteristic value with a new value.

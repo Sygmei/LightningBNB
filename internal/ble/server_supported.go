@@ -8,6 +8,7 @@ import (
 	"io"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/Sygmei/LightningBNB/internal/link"
 	"tinygo.org/x/bluetooth"
@@ -21,11 +22,13 @@ type peripheralServer struct {
 	tx            bluetooth.Characteristic
 	identity      bluetooth.Characteristic
 
-	connections chan link.PacketConn
-	done        chan struct{}
-	once        sync.Once
-	mu          sync.Mutex
-	current     *serverPacketConn
+	connections             chan link.PacketConn
+	done                    chan struct{}
+	once                    sync.Once
+	mu                      sync.Mutex
+	current                 *serverPacketConn
+	advertisementMu         sync.Mutex
+	restartingAdvertisement bool
 }
 
 func StartServer(ctx context.Context, name string, serverID ServerID) (PeripheralListener, error) {
@@ -41,6 +44,7 @@ func StartServer(ctx context.Context, name string, serverID ServerID) (Periphera
 	adapter.SetConnectHandler(func(_ bluetooth.Device, connected bool) {
 		if !connected {
 			server.closeCurrent()
+			server.scheduleAdvertisementRestart()
 		}
 	})
 	server.service = transportService(&server.rx, &server.tx, &server.identity, serverID, func(_ bluetooth.Connection, _ int, packet []byte) {
@@ -72,6 +76,43 @@ func StartServer(ctx context.Context, name string, serverID ServerID) (Periphera
 		_ = server.Close()
 	}()
 	return server, nil
+}
+
+// scheduleAdvertisementRestart handles Windows/WinRT publishers that stop
+// advertising after a link disconnect without reporting a fatal process error.
+// The short stop/start gap also gives the OS time to finish the prior async
+// publisher operation before accepting a new connection.
+func (s *peripheralServer) scheduleAdvertisementRestart() {
+	s.advertisementMu.Lock()
+	advertisement := s.advertisement
+	if advertisement == nil || s.restartingAdvertisement {
+		s.advertisementMu.Unlock()
+		return
+	}
+	s.restartingAdvertisement = true
+	s.advertisementMu.Unlock()
+	go func() {
+		defer func() {
+			s.advertisementMu.Lock()
+			s.restartingAdvertisement = false
+			s.advertisementMu.Unlock()
+		}()
+		timer := time.NewTimer(750 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-s.done:
+			return
+		case <-timer.C:
+		}
+		_ = advertisement.Stop()
+		timer.Reset(750 * time.Millisecond)
+		select {
+		case <-s.done:
+			return
+		case <-timer.C:
+		}
+		_ = advertisement.Start()
+	}()
 }
 
 func (s *peripheralServer) Accept(ctx context.Context) (link.PacketConn, error) {

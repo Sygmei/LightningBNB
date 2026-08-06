@@ -3,12 +3,14 @@ package bluetooth
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"syscall"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
 	"github.com/saltosystems/winrt-go"
 	"github.com/saltosystems/winrt-go/windows/devices/bluetooth/advertisement"
+	"github.com/saltosystems/winrt-go/windows/devices/bluetooth/genericattributeprofile"
 	"github.com/saltosystems/winrt-go/windows/foundation"
 )
 
@@ -20,6 +22,8 @@ type Adapter struct {
 	connectHandler func(device Device, connected bool)
 
 	defaultAdvertisement *Advertisement
+	serviceProvidersMu   sync.Mutex
+	serviceProviders     map[syscall.GUID]*genericattributeprofile.GattServiceProvider
 }
 
 // DefaultAdapter is the default adapter on the system.
@@ -29,6 +33,7 @@ var DefaultAdapter = &Adapter{
 	connectHandler: func(device Device, connected bool) {
 		return
 	},
+	serviceProviders: make(map[syscall.GUID]*genericattributeprofile.GattServiceProvider),
 }
 
 // Enable configures the BLE stack. It must be called before any
