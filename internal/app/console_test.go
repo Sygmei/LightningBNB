@@ -153,9 +153,12 @@ func TestTrafficDashboardShowsLinkHealthDot(t *testing.T) {
 	if !strings.Contains(strings.Join(console.lines, "\n"), "● link OFFLINE") {
 		t.Fatalf("offline link indicator = %q", strings.Join(console.lines, "\n"))
 	}
-	console.ReportLinkAndBufferFor(nil, link.TransportSnapshot{Bound: true}, 2, 5, 4096)
-	if got := strings.Join(console.lines, "\n"); !strings.Contains(got, "BUF queued 2    reqs active 5    data 4.0 KiB") {
+	console.ReportLinkAndBufferFor(nil, link.TransportSnapshot{Bound: true}, 2, 1, 5, 4096)
+	if got := strings.Join(console.lines, "\n"); !strings.Contains(got, "BUF queued 2    opening 1    active 5    data 4.0 KiB") {
 		t.Fatalf("buffer indicator = %q", got)
+	}
+	if got := strings.Join(console.lines, "\n"); !strings.Contains(got, "● link DEGRADED") {
+		t.Fatalf("degraded link indicator = %q", got)
 	}
 }
 

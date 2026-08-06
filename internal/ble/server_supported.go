@@ -53,10 +53,15 @@ func StartServer(ctx context.Context, name string, serverID ServerID) (Periphera
 	if options, start := genericAdvertisementOptions(runtime.GOOS, name); start {
 		advertisement := adapter.DefaultAdvertisement()
 		if err := advertisement.Configure(options); err != nil {
+			_ = advertisement.Stop()
 			_ = adapter.RemoveService(&server.service)
 			return nil, err
 		}
 		if err := advertisement.Start(); err != nil {
+			// WinRT publisher startup is asynchronous. Stop the partially
+			// created publisher before removing the service so a retry does not
+			// inherit an operation that is still being torn down.
+			_ = advertisement.Stop()
 			_ = adapter.RemoveService(&server.service)
 			return nil, err
 		}

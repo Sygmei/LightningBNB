@@ -107,13 +107,13 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 			console.SetLinkSession(linkSession)
 			startLinkHealthReporter(ctx, linkSession, func(snapshot link.TransportSnapshot) {
 				bridgeSnapshot := clientBridge.Snapshot()
-				console.ReportLinkAndBufferFor(linkSession, snapshot, bridgeSnapshot.WaitingConnections, bridgeSnapshot.ActiveConnections, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
+				console.ReportLinkAndBufferFor(linkSession, snapshot, bridgeSnapshot.WaitingConnections, bridgeSnapshot.OpeningConnections, bridgeSnapshot.ActiveConnections, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
 			})
 		}
 		if cfg.TransportDebug {
 			startTransportDebugReporter(ctx, linkSession, logger.Printf)
 		}
-		clientBridge.SetEndpoint(&bridge.Endpoint{Link: linkSession, Mux: muxSession})
+		clientBridge.SetEndpoint(&bridge.Endpoint{Link: linkSession, Mux: muxSession, Reset: func() { _ = linkSession.Close() }})
 		logger.Printf("starting BLE session for server %s", deviceID)
 
 		for ctx.Err() == nil {

@@ -36,17 +36,19 @@ type runtimeConsole struct {
 }
 
 type linkHealthState struct {
-	known            bool
-	bound            bool
-	heartbeatPending bool
-	failures         int
+	known              bool
+	bound              bool
+	heartbeatPending   bool
+	failures           int
+	applicationPending bool
 }
 
 type bufferState struct {
-	known  bool
-	queued int
-	active int
-	bytes  uint64
+	known   bool
+	queued  int
+	opening int
+	active  int
+	bytes   uint64
 }
 
 func newRuntimeConsole(output io.Writer, tui bool) *runtimeConsole {
@@ -137,7 +139,7 @@ func (c *runtimeConsole) ReportBufferFor(session *link.Session, queued, active i
 	c.reportBuffer(session, queued, active, bytes)
 }
 
-func (c *runtimeConsole) ReportLinkAndBufferFor(session *link.Session, snapshot link.TransportSnapshot, queued, active int, bytes uint64) {
+func (c *runtimeConsole) ReportLinkAndBufferFor(session *link.Session, snapshot link.TransportSnapshot, queued, opening, active int, bytes uint64) {
 	if !c.tui {
 		return
 	}
@@ -147,12 +149,13 @@ func (c *runtimeConsole) ReportLinkAndBufferFor(session *link.Session, snapshot 
 		return
 	}
 	c.linkHealth = linkHealthState{
-		known:            true,
-		bound:            snapshot.Bound,
-		heartbeatPending: snapshot.HeartbeatPending,
-		failures:         snapshot.HeartbeatConsecutiveFailures,
+		known:              true,
+		bound:              snapshot.Bound,
+		heartbeatPending:   snapshot.HeartbeatPending,
+		failures:           snapshot.HeartbeatConsecutiveFailures,
+		applicationPending: opening > 0,
 	}
-	c.bufferState = bufferState{known: true, queued: queued, active: active, bytes: bytes}
+	c.bufferState = bufferState{known: true, queued: queued, opening: opening, active: active, bytes: bytes}
 	if len(c.lines) > 0 {
 		c.clearLocked()
 		c.lines = c.trafficLinesFromCurrent(c.lines)
@@ -276,6 +279,8 @@ func (c *runtimeConsole) healthLine() string {
 		switch {
 		case !c.linkHealth.bound:
 			label, color = "OFFLINE", "31"
+		case c.linkHealth.applicationPending:
+			label, color = "DEGRADED", "33"
 		case c.linkHealth.heartbeatPending || c.linkHealth.failures > 0:
 			label, color = "CHECKING", "33"
 		default:
@@ -294,7 +299,7 @@ func (c *runtimeConsole) bufferLine() string {
 	if !c.bufferState.known {
 		return dashboardLine("BUF queued -- reqs active -- data --")
 	}
-	content := fmt.Sprintf("BUF queued %-4d reqs active %-4d data %-10s", c.bufferState.queued, c.bufferState.active, formatBytes(float64(c.bufferState.bytes)))
+	content := fmt.Sprintf("BUF queued %-4d opening %-4d active %-4d data %-10s", c.bufferState.queued, c.bufferState.opening, c.bufferState.active, formatBytes(float64(c.bufferState.bytes)))
 	line := dashboardLine(content)
 	if c.color {
 		line = strings.Replace(line, "BUF", c.paint("BUF", "1;35"), 1)

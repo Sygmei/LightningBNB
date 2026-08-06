@@ -48,6 +48,10 @@ func (a *Advertisement) Configure(options AdvertisementOptions) error {
 	}
 
 	if a.publisher != nil {
+		// Stop is asynchronous in WinRT. Request shutdown before releasing
+		// the publisher so a subsequent Configure/Start does not race the
+		// previous advertising operation.
+		_ = a.publisher.Stop()
 		a.publisher.Release()
 	}
 

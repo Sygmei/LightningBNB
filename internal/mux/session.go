@@ -50,6 +50,7 @@ type Session struct {
 type Snapshot struct {
 	Streams        int
 	PendingAccepts int
+	OpeningStreams int
 }
 
 func NewClient(conn net.Conn, maxStreams int) *Session {
@@ -169,8 +170,21 @@ func (s *Session) NumStreams() int {
 
 func (s *Session) Snapshot() Snapshot {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return Snapshot{Streams: len(s.streams), PendingAccepts: len(s.accept)}
+	streams := make([]*Stream, 0, len(s.streams))
+	for _, stream := range s.streams {
+		streams = append(streams, stream)
+	}
+	pending := len(s.accept)
+	s.mu.Unlock()
+	opening := 0
+	for _, stream := range streams {
+		stream.mu.Lock()
+		if !stream.opened && stream.openErr == nil && !stream.closed {
+			opening++
+		}
+		stream.mu.Unlock()
+	}
+	return Snapshot{Streams: len(streams), PendingAccepts: pending, OpeningStreams: opening}
 }
 
 func (s *Session) Close() error {
@@ -304,6 +318,13 @@ func (s *Session) sendControl(frame protocol.Frame) error {
 		return s.Err()
 	case s.control <- frame:
 		return nil
+	default:
+		// A full control queue means the mux writer is no longer making
+		// progress. Blocking here would strand OPEN/RESET callers forever;
+		// tear down the mux so the owning BLE session can be rebound.
+		err := errors.New("multiplexing control queue full")
+		s.shutdown(err)
+		return err
 	}
 }
 
@@ -313,6 +334,10 @@ func (s *Session) schedule(stream *Stream) error {
 		return s.Err()
 	case s.ready <- stream.id:
 		return nil
+	default:
+		err := errors.New("multiplexing scheduler queue full")
+		s.shutdown(err)
+		return err
 	}
 }
 

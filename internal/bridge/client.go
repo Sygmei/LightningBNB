@@ -20,6 +20,9 @@ type Availability interface {
 type Endpoint struct {
 	Link Availability
 	Mux  *mux.Session
+	// Reset closes the owning reliable session when multiplexed control stops
+	// making progress, allowing the application to establish a clean binding.
+	Reset func()
 }
 
 // Snapshot reports local TCP pressure. ActiveConnections includes both
@@ -29,7 +32,10 @@ type Endpoint struct {
 type Snapshot struct {
 	ActiveConnections  int
 	WaitingConnections int
+	OpeningConnections int
 }
+
+const streamOpenTimeout = 15 * time.Second
 
 type Client struct {
 	resumeTimeout time.Duration
@@ -37,6 +43,7 @@ type Client struct {
 	logf          func(string, ...any)
 	traffic       *traffic.Counter
 	waiting       int
+	opening       int
 
 	mu       sync.Mutex
 	endpoint *Endpoint
@@ -74,6 +81,9 @@ func (c *Client) SetEndpoint(endpoint *Endpoint) {
 	if endpoint != nil {
 		go func() {
 			<-endpoint.Mux.Done()
+			if endpoint.Reset != nil {
+				endpoint.Reset()
+			}
 			c.mu.Lock()
 			if c.endpoint == endpoint {
 				c.endpoint = nil
@@ -86,9 +96,9 @@ func (c *Client) SetEndpoint(endpoint *Endpoint) {
 
 func (c *Client) Snapshot() Snapshot {
 	c.mu.Lock()
-	waiting := c.waiting
+	waiting, opening := c.waiting, c.opening
 	c.mu.Unlock()
-	return Snapshot{ActiveConnections: len(c.limit), WaitingConnections: waiting}
+	return Snapshot{ActiveConnections: len(c.limit), WaitingConnections: waiting, OpeningConnections: opening}
 }
 
 func (c *Client) Serve(ctx context.Context, listener net.Listener) error {
@@ -130,9 +140,21 @@ func (c *Client) handle(parent context.Context, conn net.Conn) {
 		c.logf("closing queued connection from %s: %v", conn.RemoteAddr(), err)
 		return
 	}
-	stream, err := endpoint.Mux.Open(ctx)
+	c.mu.Lock()
+	c.opening++
+	c.mu.Unlock()
+	openCtx, openCancel := context.WithTimeout(ctx, streamOpenTimeout)
+	stream, err := endpoint.Mux.Open(openCtx)
+	openCancel()
+	c.mu.Lock()
+	c.opening--
+	c.mu.Unlock()
 	if err != nil {
 		c.logf("opening bridged stream for %s: %v", conn.RemoteAddr(), err)
+		if errors.Is(err, context.DeadlineExceeded) && endpoint.Reset != nil {
+			c.logf("multiplexed stream open stalled; resetting BLE session")
+			endpoint.Reset()
+		}
 		return
 	}
 	if err := ProxyWithTraffic(conn, stream, c.traffic); err != nil {

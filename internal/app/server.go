@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Sygmei/LightningBNB/internal/ble"
@@ -47,7 +49,7 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	listener, err := ble.StartServer(ctx, cfg.Name, serverID)
+	listener, err := startBLEServer(ctx, cfg.Name, serverID, func(format string, args ...any) { logger.Printf(format, args...) })
 	if err != nil {
 		return fmt.Errorf("start Bluetooth server: %w", err)
 	}
@@ -138,13 +140,19 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 				sessionMux := currentMux
 				startLinkHealthReporter(ctx, currentLink, func(snapshot link.TransportSnapshot) {
 					muxSnapshot := sessionMux.Snapshot()
-					console.ReportLinkAndBufferFor(currentLink, snapshot, muxSnapshot.PendingAccepts, muxSnapshot.Streams, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
+					console.ReportLinkAndBufferFor(currentLink, snapshot, muxSnapshot.PendingAccepts, muxSnapshot.OpeningStreams, muxSnapshot.Streams, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
 				})
 			}
 			if cfg.TransportDebug {
 				startTransportDebugReporter(ctx, currentLink, logger.Printf)
 			}
 			muxForBridge := currentMux
+			go func(sessionMux *mux.Session, sessionLink *link.Session) {
+				<-sessionMux.Done()
+				if sessionLink.IsBound() {
+					_ = sessionLink.Close()
+				}
+			}(currentMux, currentLink)
 			if cfg.Benchmark {
 				go func() {
 					if err := ServeBenchmarkStreams(ctx, muxForBridge, counter, logger.Printf); err != nil && ctx.Err() == nil {
@@ -180,4 +188,36 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 			currentLink.Config().MaxConnections,
 		)
 	}
+}
+
+func startBLEServer(ctx context.Context, name string, serverID ble.ServerID, logf func(string, ...any)) (ble.PeripheralListener, error) {
+	const attempts = 4
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		var listener ble.PeripheralListener
+		listener, err = ble.StartServer(ctx, name, serverID)
+		if err == nil {
+			return listener, nil
+		}
+		if runtime.GOOS != "windows" || attempt == attempts || ctx.Err() != nil {
+			break
+		}
+		// Windows can leave the WinRT GATT publisher in an asynchronous
+		// stopping state for a short period after process shutdown.
+		if !strings.Contains(err.Error(), "HRESULT") && !strings.Contains(err.Error(), "async operation") {
+			break
+		}
+		delay := time.Duration(1<<(attempt-1)) * time.Second
+		if logf != nil {
+			logf("Bluetooth server startup attempt %d/%d failed: %v; retrying in %s", attempt, attempts, err, delay)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, err
 }
