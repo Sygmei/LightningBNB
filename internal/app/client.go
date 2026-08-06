@@ -236,7 +236,10 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 }
 
 func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Duration, input io.Reader, output io.Writer) (ble.Device, error) {
-	devices, err := adapter.Discover(ctx, timeout)
+	// Resolve the GATT identity while listing devices. The platform address
+	// (Device.ID) can change between BLE sessions, whereas ServerID is persisted
+	// by the server and is the value that must be passed back to --device.
+	devices, err := adapter.Scan(ctx, timeout)
 	if err != nil {
 		return ble.Device{}, err
 	}
@@ -246,10 +249,7 @@ func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Durati
 	}
 	_, _ = fmt.Fprintln(output, "Nearby LightningBNB servers:")
 	for i, device := range devices {
-		name := device.Name
-		if name == "" {
-			name = "(unnamed)"
-		}
+		name := deviceDisplayName(device)
 		selectedID := device.ServerID
 		if selectedID == "" {
 			selectedID = device.ID
@@ -269,6 +269,16 @@ func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Durati
 		return ble.Device{}, errors.New("invalid server selection")
 	}
 	return devices[selection-1], nil
+}
+
+func deviceDisplayName(device ble.Device) string {
+	if name := strings.TrimSpace(device.Name); name != "" {
+		return name
+	}
+	if device.ServerID != "" {
+		return device.ServerID
+	}
+	return "(unnamed)"
 }
 
 func waitContext(ctx context.Context, duration time.Duration) bool {

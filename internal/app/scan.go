@@ -53,10 +53,7 @@ func Scan(ctx context.Context, timeout time.Duration, all bool, output io.Writer
 	}
 	_, _ = fmt.Fprintln(output, "SERVER_ID\tPLATFORM_ID\tRSSI\tNAME")
 	for _, device := range devices {
-		name := device.Name
-		if name == "" {
-			name = "(unnamed)"
-		}
+		name := deviceDisplayName(device)
 		serverID := device.ServerID
 		if serverID == "" {
 			serverID = "(unavailable)"
