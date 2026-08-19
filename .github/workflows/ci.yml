@@ -22,7 +22,34 @@ jobs:
           cache: true
       - name: Check formatting
         shell: bash
-        run: test -z "$(gofmt -l .)"
+        run: |
+          files="$(gofmt -l .)"
+          if [ -z "${files}" ]; then
+            echo "All Go files are gofmt-formatted."
+            exit 0
+          fi
+
+          echo "gofmt found unformatted Go files:"
+          printf '%s\n' "${files}"
+
+          {
+            echo "## gofmt failures"
+            echo
+            echo '```text'
+            printf '%s\n' "${files}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          while IFS= read -r file; do
+            [ -z "${file}" ] && continue
+            annotation_file="${file//\\//}"
+            echo "::error file=${annotation_file},title=gofmt::File is not gofmt-formatted"
+            echo "::group::gofmt diff for ${file}"
+            gofmt -d "${file}"
+            echo "::endgroup::"
+          done <<< "${files}"
+
+          exit 1
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/lightningbnb
