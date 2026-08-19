@@ -102,6 +102,36 @@ func (c *Client) Snapshot() Snapshot {
 }
 
 func (c *Client) Serve(ctx context.Context, listener net.Listener) error {
+	return c.ServeServices(ctx, map[string][]net.Listener{"": {listener}})
+}
+
+// ServeServices accepts local listeners keyed by the server service selector.
+// All listeners share one connection limit and one resumable BLE endpoint.
+func (c *Client) ServeServices(ctx context.Context, listeners map[string][]net.Listener) error {
+	if len(listeners) == 0 {
+		return errors.New("no local service listeners configured")
+	}
+	for service, serviceListeners := range listeners {
+		service := service
+		for _, listener := range serviceListeners {
+			listener := listener
+			go func() {
+				if err := c.serveListener(ctx, service, listener); err != nil {
+					c.logf("local service %q ended: %v", service, err)
+				}
+			}()
+		}
+	}
+	<-ctx.Done()
+	for _, serviceListeners := range listeners {
+		for _, listener := range serviceListeners {
+			_ = listener.Close()
+		}
+	}
+	return nil
+}
+
+func (c *Client) serveListener(ctx context.Context, service string, listener net.Listener) error {
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
@@ -116,7 +146,7 @@ func (c *Client) Serve(ctx context.Context, listener net.Listener) error {
 		}
 		select {
 		case c.limit <- struct{}{}:
-			go c.handle(ctx, conn)
+			go c.handle(ctx, conn, service)
 		default:
 			c.logf("rejecting local connection from %s: connection limit reached", conn.RemoteAddr())
 			_ = conn.Close()
@@ -124,7 +154,7 @@ func (c *Client) Serve(ctx context.Context, listener net.Listener) error {
 	}
 }
 
-func (c *Client) handle(parent context.Context, conn net.Conn) {
+func (c *Client) handle(parent context.Context, conn net.Conn, service string) {
 	defer func() { <-c.limit }()
 	defer conn.Close()
 	ctx, cancel := context.WithTimeout(parent, c.resumeTimeout)
@@ -144,7 +174,7 @@ func (c *Client) handle(parent context.Context, conn net.Conn) {
 	c.opening++
 	c.mu.Unlock()
 	openCtx, openCancel := context.WithTimeout(ctx, streamOpenTimeout)
-	stream, err := endpoint.Mux.Open(openCtx)
+	stream, err := endpoint.Mux.OpenService(openCtx, service)
 	openCancel()
 	c.mu.Lock()
 	c.opening--

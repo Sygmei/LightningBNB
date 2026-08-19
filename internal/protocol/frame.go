@@ -8,7 +8,7 @@ import (
 )
 
 // Version is the on-wire LightningBNB protocol version.
-const Version uint8 = 1
+const Version uint8 = 2
 
 const (
 	HeaderSize      = 9
@@ -26,6 +26,7 @@ const (
 	FrameWindowUpdate
 	FrameFIN
 	FrameReset
+	FrameServiceList
 )
 
 var (
@@ -77,17 +78,25 @@ func ReadFrame(r io.Reader) (Frame, error) {
 }
 
 func Validate(frame Frame) error {
-	if frame.StreamID == 0 {
+	if frame.StreamID == 0 && frame.Type != FrameServiceList {
 		return fmt.Errorf("%w: stream id is zero", ErrInvalidFrame)
 	}
 	switch frame.Type {
-	case FrameOpen, FrameOpenOK, FrameFIN:
+	case FrameOpenOK, FrameFIN:
 		if len(frame.Payload) != 0 {
 			return fmt.Errorf("%w: frame type %d must not contain a payload", ErrInvalidFrame, frame.Type)
+		}
+	case FrameOpen:
+		if len(frame.Payload) > 128 {
+			return fmt.Errorf("%w: service selector too long", ErrInvalidFrame)
 		}
 	case FrameOpenError, FrameReset:
 		if len(frame.Payload) > MaxErrorPayload {
 			return fmt.Errorf("%w: error payload length %d", ErrFrameTooLarge, len(frame.Payload))
+		}
+	case FrameServiceList:
+		if len(frame.Payload) == 0 {
+			return fmt.Errorf("%w: empty service list", ErrInvalidFrame)
 		}
 	case FrameData:
 		if len(frame.Payload) == 0 || len(frame.Payload) > MaxDataPayload {

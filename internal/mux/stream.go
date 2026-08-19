@@ -15,6 +15,7 @@ import (
 type Stream struct {
 	session *Session
 	id      uint32
+	service string
 
 	mu                sync.Mutex
 	opened            bool
@@ -48,6 +49,10 @@ func newStream(session *Session, id uint32) *Stream {
 }
 
 func (s *Stream) ID() uint32 { return s.id }
+
+// Service returns the selector supplied by the client when the stream was
+// opened. It is meaningful on server-side streams.
+func (s *Stream) Service() string { return s.service }
 
 func (s *Stream) Approve() error {
 	s.mu.Lock()

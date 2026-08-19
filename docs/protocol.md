@@ -1,4 +1,4 @@
-# LightningBNB protocol version 1
+# LightningBNB protocol version 2
 
 All multi-byte integers use network byte order (big endian). Receivers reject malformed lengths, invalid stream state, unavailable replay offsets, and unsupported protocol versions.
 
@@ -72,15 +72,16 @@ Client-created stream IDs are non-zero odd integers. Payloads are limited to 16 
 
 | Type | Value | Payload |
 | --- | --- | --- |
-| `OPEN` | `0x01` | none |
+| `OPEN` | `0x01` | optional UTF-8 service selector (empty for the legacy single-target form) |
 | `OPEN_OK` | `0x02` | none |
 | `OPEN_ERROR` | `0x03` | UTF-8 diagnostic, at most 256 bytes |
 | `DATA` | `0x04` | TCP bytes, 1–16384 bytes |
 | `WINDOW_UPDATE` | `0x05` | consumed byte count `u32` |
 | `FIN` | `0x06` | none |
 | `RESET` | `0x07` | UTF-8 diagnostic, at most 256 bytes |
+| `SERVICE_LIST` | `0x08` | stream ID zero; service count followed by name length, name, and port for each service |
 
-`OPEN` normally asks the server to dial its fixed configured target. The client does not forward data until `OPEN_OK`; target DNS, refusal, and timeout failures produce `OPEN_ERROR`. A server started with `--benchmark` instead approves each `OPEN` as an in-memory benchmark stream and never dials a TCP target.
+The server sends one `SERVICE_LIST` after the mux session starts. An `OPEN` selector may be a configured service name or a numeric port. Numeric selectors are resolved only against advertised services; an unadvertised port produces `OPEN_ERROR`. The client does not forward data until `OPEN_OK`; target DNS, refusal, and timeout failures produce `OPEN_ERROR`. A server started with `--benchmark` sends an empty list and approves each `OPEN` as an in-memory benchmark stream instead of dialing a TCP target.
 
 Each stream starts with a 64 KiB receive window. `DATA` consumes window space, and application reads return it through `WINDOW_UPDATE`. The sender splits writes into at most 16 KiB frames and schedules at most one frame per ready stream before rotating to another ready stream.
 

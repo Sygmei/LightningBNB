@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -182,6 +183,40 @@ func TestServerReportsUnavailableTarget(t *testing.T) {
 	go func() { _ = ServeServer(ctx, serverMux, target, 100*time.Millisecond, nil) }()
 	if _, err := clientMux.Open(ctx); err == nil {
 		t.Fatal("opening a stream to an unavailable target succeeded")
+	}
+}
+
+func TestServerForwardsAdvertisedServiceByPort(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	target, _ := startEchoServer(t, ctx)
+	defer target.Close()
+	port := target.Addr().(*net.TCPAddr).Port
+	clientWire, serverWire := net.Pipe()
+	clientMux := mux.NewClient(clientWire, 1)
+	serverMux := mux.NewServerWithServicesAndCompressionAndTraffic(serverWire, 1, false, nil, []mux.Service{{Name: "http", Port: port}})
+	defer clientMux.Close()
+	defer serverMux.Close()
+	go func() {
+		_ = ServeServerWithServicesWithTraffic(ctx, serverMux, "127.0.0.1", []mux.Service{{Name: "http", Port: port}}, time.Second, nil, nil)
+	}()
+	stream, err := clientMux.OpenService(ctx, strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Write([]byte("service")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "service" {
+		t.Fatalf("echo = %q", got)
 	}
 }
 

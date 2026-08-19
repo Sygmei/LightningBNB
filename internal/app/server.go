@@ -20,6 +20,7 @@ import (
 type ServerConfig struct {
 	TargetHost     string
 	TargetPort     int
+	Services       []mux.Service
 	Name           string
 	DialTimeout    time.Duration
 	ResumeTimeout  time.Duration
@@ -43,7 +44,15 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	logger := console.Logger()
 	target := ""
 	if !cfg.Benchmark {
-		target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(cfg.TargetPort))
+		if len(cfg.Services) == 0 {
+			target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(cfg.TargetPort))
+		} else {
+			for _, service := range cfg.Services {
+				if target == "" {
+					target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(service.Port))
+				}
+			}
+		}
 	}
 	serverID, serverIDPath, err := loadOrCreateServerID(cfg.ServerIDFile)
 	if err != nil {
@@ -69,6 +78,8 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	}
 	if cfg.Benchmark {
 		logger.Printf("advertising %q in benchmark mode", cfg.Name)
+	} else if len(cfg.Services) > 0 {
+		logger.Printf("advertising %q; forwarding services on %s", cfg.Name, cfg.TargetHost)
 	} else {
 		logger.Printf("advertising %q; forwarding TCP streams to %s", cfg.Name, target)
 	}
@@ -134,7 +145,11 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 				MaxConnections: cfg.MaxConnections,
 				Compression:    hello.Compression,
 			})
-			currentMux = mux.NewServerWithCompressionAndTraffic(currentLink, cfg.MaxConnections, hello.Compression, counter)
+			services := cfg.Services
+			if len(services) == 0 && !cfg.Benchmark {
+				services = []mux.Service{{Port: cfg.TargetPort}}
+			}
+			currentMux = mux.NewServerWithServicesAndCompressionAndTraffic(currentLink, cfg.MaxConnections, hello.Compression, counter, services)
 			if cfg.StatsTUI {
 				console.SetLinkSession(currentLink)
 				sessionMux := currentMux
@@ -160,8 +175,15 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 					}
 				}()
 			} else {
+				serverServices := append([]mux.Service(nil), services...)
 				go func() {
-					if err := bridge.ServeServerWithTraffic(ctx, muxForBridge, target, cfg.DialTimeout, logger.Printf, counter); err != nil && ctx.Err() == nil {
+					if len(serverServices) == 0 {
+						if err := bridge.ServeServerWithTraffic(ctx, muxForBridge, target, cfg.DialTimeout, logger.Printf, counter); err != nil && ctx.Err() == nil {
+							logger.Printf("TCP bridge session ended: %v", err)
+						}
+						return
+					}
+					if err := bridge.ServeServerWithServicesWithTraffic(ctx, muxForBridge, cfg.TargetHost, serverServices, cfg.DialTimeout, logger.Printf, counter); err != nil && ctx.Err() == nil {
 						logger.Printf("TCP bridge session ended: %v", err)
 					}
 				}()

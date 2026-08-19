@@ -21,6 +21,7 @@ import (
 type ClientConfig struct {
 	ListenHost         string
 	ListenPort         int
+	Services           []ClientService
 	DeviceID           string
 	ScanTimeout        time.Duration
 	ResumeTimeout      time.Duration
@@ -50,14 +51,42 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	console := newRuntimeConsole(cfg.ErrorOutput, cfg.StatsTUI)
 	defer console.Close()
 	logger := console.Logger()
-	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)))
-	if err != nil {
-		return fmt.Errorf("listen for local TCP connections: %w", err)
+	if err := ValidateClientServices(cfg.Services); err != nil {
+		return err
 	}
-	defer listener.Close()
-	if !cfg.SuppressListenAddr {
-		_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR=%s\n", listener.Addr())
+	listeners := make(map[string][]net.Listener)
+	var allListeners []net.Listener
+	if len(cfg.Services) == 0 {
+		listener, listenErr := net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)))
+		if listenErr != nil {
+			return fmt.Errorf("listen for local TCP connections: %w", listenErr)
+		}
+		listeners[""] = []net.Listener{listener}
+		allListeners = append(allListeners, listener)
+		if !cfg.SuppressListenAddr {
+			_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR=%s\n", listener.Addr())
+		}
+	} else {
+		for _, service := range cfg.Services {
+			listener, listenErr := net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(service.LocalPort)))
+			if listenErr != nil {
+				for _, opened := range allListeners {
+					_ = opened.Close()
+				}
+				return fmt.Errorf("listen for service %q: %w", service.Remote, listenErr)
+			}
+			listeners[service.Remote] = append(listeners[service.Remote], listener)
+			allListeners = append(allListeners, listener)
+			if !cfg.SuppressListenAddr {
+				_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR[%s]=%s\n", service.Remote, listener.Addr())
+			}
+		}
 	}
+	defer func() {
+		for _, listener := range allListeners {
+			_ = listener.Close()
+		}
+	}()
 
 	adapter := ble.NewAdapter()
 	deviceID := cfg.DeviceID
@@ -67,8 +96,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 		if !cfg.Interactive {
 			return errors.New("--device is required when stdin is not an interactive terminal")
 		}
-		selected, chooseErr := chooseDevice(ctx, adapter, cfg.ScanTimeout, cfg.Input, cfg.ErrorOutput)
-		err = chooseErr
+		selected, err := chooseDevice(ctx, adapter, cfg.ScanTimeout, cfg.Input, cfg.ErrorOutput)
 		if err != nil {
 			return err
 		}
@@ -84,7 +112,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	defer stopStats()
 	clientBridge := bridge.NewClientWithTraffic(cfg.ResumeTimeout, cfg.MaxConnections, logger.Printf, counter)
 	bridgeErr := make(chan error, 1)
-	go func() { bridgeErr <- clientBridge.Serve(ctx, listener) }()
+	go func() { bridgeErr <- clientBridge.ServeServices(ctx, listeners) }()
 	var benchmarkDone <-chan error
 	var cancelBenchmark context.CancelFunc
 	defer func() {

@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 const (
 	InitialStreamWindow = 64 * 1024
 	acceptBacklogFactor = 2
+	maxServiceName      = 64
 )
 
 var (
@@ -30,6 +32,7 @@ type Session struct {
 	maxStreams  int
 	compression bool
 	traffic     *traffic.Counter
+	services    []Service
 
 	mu      sync.Mutex
 	streams map[uint32]*Stream
@@ -37,11 +40,20 @@ type Session struct {
 	closed  bool
 	err     error
 
-	control chan protocol.Frame
-	ready   chan uint32
-	accept  chan *Stream
-	done    chan struct{}
-	once    sync.Once
+	control       chan protocol.Frame
+	ready         chan uint32
+	accept        chan *Stream
+	done          chan struct{}
+	once          sync.Once
+	servicesReady chan struct{}
+	servicesErr   error
+}
+
+// Service is a TCP target advertised by the server. Name is the selector
+// used by clients; a numeric port selector is also accepted for every service.
+type Service struct {
+	Name string
+	Port int
 }
 
 // Snapshot reports multiplexed stream pressure for diagnostics and the live
@@ -77,6 +89,15 @@ func NewServerWithCompressionAndTraffic(conn net.Conn, maxStreams int, compressi
 	return newSession(conn, false, maxStreams, compression, counter)
 }
 
+func NewServerWithServicesAndCompressionAndTraffic(conn net.Conn, maxStreams int, compression bool, counter *traffic.Counter, services []Service) *Session {
+	s := newSession(conn, false, maxStreams, compression, counter)
+	s.services = append([]Service(nil), services...)
+	// The control queue is buffered and the writer goroutine is already running,
+	// so the list is sent before any later OPEN frames.
+	s.control <- protocol.Frame{Type: protocol.FrameServiceList, Payload: encodeServices(s.services)}
+	return s
+}
+
 func newSession(conn net.Conn, client bool, maxStreams int, compression bool, counter *traffic.Counter) *Session {
 	if maxStreams <= 0 {
 		maxStreams = 1
@@ -89,17 +110,18 @@ func newSession(conn net.Conn, client bool, maxStreams int, compression bool, co
 		nextID = 1
 	}
 	s := &Session{
-		conn:        conn,
-		client:      client,
-		maxStreams:  maxStreams,
-		compression: compression,
-		traffic:     counter,
-		streams:     make(map[uint32]*Stream),
-		nextID:      nextID,
-		control:     make(chan protocol.Frame, maxStreams*8),
-		ready:       make(chan uint32, maxStreams),
-		accept:      make(chan *Stream, maxStreams*acceptBacklogFactor),
-		done:        make(chan struct{}),
+		conn:          conn,
+		client:        client,
+		maxStreams:    maxStreams,
+		compression:   compression,
+		traffic:       counter,
+		streams:       make(map[uint32]*Stream),
+		nextID:        nextID,
+		control:       make(chan protocol.Frame, maxStreams*8),
+		ready:         make(chan uint32, maxStreams),
+		accept:        make(chan *Stream, maxStreams*acceptBacklogFactor),
+		done:          make(chan struct{}),
+		servicesReady: make(chan struct{}),
 	}
 	go s.readLoop()
 	go s.writeLoop()
@@ -107,8 +129,17 @@ func newSession(conn net.Conn, client bool, maxStreams int, compression bool, co
 }
 
 func (s *Session) Open(ctx context.Context) (*Stream, error) {
+	return s.OpenService(ctx, "")
+}
+
+// OpenService opens a stream targeting the named server service. An empty
+// selector is the legacy single-target form.
+func (s *Session) OpenService(ctx context.Context, service string) (*Stream, error) {
 	if !s.client {
 		return nil, errors.New("server sessions cannot open target streams")
+	}
+	if len(service) > maxServiceName {
+		return nil, errors.New("service selector is too long")
 	}
 	s.mu.Lock()
 	if s.closed {
@@ -129,7 +160,7 @@ func (s *Session) Open(ctx context.Context) (*Stream, error) {
 	stream := newStream(s, id)
 	s.streams[id] = stream
 	s.mu.Unlock()
-	if err := s.sendControl(protocol.Frame{Type: protocol.FrameOpen, StreamID: id}); err != nil {
+	if err := s.sendControl(protocol.Frame{Type: protocol.FrameOpen, StreamID: id, Payload: []byte(service)}); err != nil {
 		s.removeStream(id)
 		return nil, err
 	}
@@ -138,6 +169,22 @@ func (s *Session) Open(ctx context.Context) (*Stream, error) {
 		return nil, err
 	}
 	return stream, nil
+}
+
+// Services waits for the server's advertised service list.
+func (s *Session) Services(ctx context.Context) ([]Service, error) {
+	select {
+	case <-s.servicesReady:
+		s.mu.Lock()
+		services := append([]Service(nil), s.services...)
+		err := s.servicesErr
+		s.mu.Unlock()
+		return services, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.done:
+		return nil, s.Err()
+	}
 }
 
 func (s *Session) Accept(ctx context.Context) (*Stream, error) {
@@ -207,6 +254,25 @@ func (s *Session) readLoop() {
 }
 
 func (s *Session) handleFrame(frame protocol.Frame) error {
+	if frame.Type == protocol.FrameServiceList {
+		if !s.client || frame.StreamID != 0 {
+			return fmt.Errorf("%w: unexpected service list", ErrProtocol)
+		}
+		services, err := decodeServices(frame.Payload)
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.services = services
+		s.servicesErr = nil
+		select {
+		case <-s.servicesReady:
+		default:
+			close(s.servicesReady)
+		}
+		s.mu.Unlock()
+		return nil
+	}
 	if frame.Type == protocol.FrameOpen {
 		return s.handleOpen(frame)
 	}
@@ -262,6 +328,7 @@ func (s *Session) handleOpen(frame protocol.Frame) error {
 		return s.sendControl(protocol.Frame{Type: protocol.FrameOpenError, StreamID: frame.StreamID, Payload: []byte("server stream limit reached")})
 	}
 	stream := newStream(s, frame.StreamID)
+	stream.service = string(frame.Payload)
 	s.streams[frame.StreamID] = stream
 	s.mu.Unlock()
 	select {
@@ -273,6 +340,56 @@ func (s *Session) handleOpen(frame protocol.Frame) error {
 		s.removeStream(frame.StreamID)
 		return s.sendControl(protocol.Frame{Type: protocol.FrameOpenError, StreamID: frame.StreamID, Payload: []byte("server accept backlog full")})
 	}
+}
+
+func encodeServices(services []Service) []byte {
+	length := 2
+	for _, service := range services {
+		length += 1 + len(service.Name) + 2
+	}
+	payload := make([]byte, length)
+	binary.BigEndian.PutUint16(payload[:2], uint16(len(services)))
+	offset := 2
+	for _, service := range services {
+		payload[offset] = byte(len(service.Name))
+		offset++
+		copy(payload[offset:], service.Name)
+		offset += len(service.Name)
+		binary.BigEndian.PutUint16(payload[offset:offset+2], uint16(service.Port))
+		offset += 2
+	}
+	return payload
+}
+
+func decodeServices(payload []byte) ([]Service, error) {
+	if len(payload) < 2 {
+		return nil, fmt.Errorf("%w: truncated service list", ErrProtocol)
+	}
+	count := int(binary.BigEndian.Uint16(payload[:2]))
+	services := make([]Service, 0, count)
+	offset := 2
+	for range count {
+		if offset >= len(payload) {
+			return nil, fmt.Errorf("%w: truncated service name", ErrProtocol)
+		}
+		nameLength := int(payload[offset])
+		offset++
+		if nameLength > maxServiceName || offset+nameLength+2 > len(payload) {
+			return nil, fmt.Errorf("%w: invalid service entry", ErrProtocol)
+		}
+		name := string(payload[offset : offset+nameLength])
+		offset += nameLength
+		port := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
+		offset += 2
+		if port < 1 || port > 65535 {
+			return nil, fmt.Errorf("%w: invalid service port", ErrProtocol)
+		}
+		services = append(services, Service{Name: name, Port: port})
+	}
+	if offset != len(payload) {
+		return nil, fmt.Errorf("%w: trailing service list data", ErrProtocol)
+	}
+	return services, nil
 }
 
 func (s *Session) writeLoop() {

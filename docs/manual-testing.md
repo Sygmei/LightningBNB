@@ -17,6 +17,12 @@ For every pairing:
 2. Run `lightningbnb server --target-port PORT`, then confirm `lightningbnb scan` shows the server name or identifier and RSSI.
 3. Start the client once through the interactive picker and once with `--device ID`. Confirm the printed `LISTEN_ADDR` uses a random port unless an explicit port is supplied.
 4. Open at least four simultaneous local TCP connections. Send distinguishable bidirectional payloads and verify no cross-stream data or starvation.
+
+For service forwarding, run the server with at least two declarations such as
+`--service http:1180 --service https:11443`. Run the client with only one
+mapping, then with both mappings, and verify that `services --device ID` lists
+the aliases and ports and that a numeric mapping such as `1180:1180` works only
+for an advertised port.
 5. Exercise a protocol that uses TCP half-close: send a request, close only the client write direction, and verify the complete response still arrives.
 6. Stop the target and verify a new local connection closes with a target error in the server/client diagnostics without disrupting existing streams.
 

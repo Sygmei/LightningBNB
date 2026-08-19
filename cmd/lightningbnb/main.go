@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,6 +56,8 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		compression := flags.Bool("compression", false, "compress multiplexed TCP payloads; server must allow compression")
 		transportDebug := flags.Bool("transport-debug", false, "log reliable-link packet and latency diagnostics")
+		var serviceValues stringListFlag
+		flags.Var(&serviceValues, "service", "local-port:server-service; may be repeated")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -72,12 +76,29 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		if *statsInterval < 0 {
 			return errors.New("--stats-interval must not be negative")
 		}
+		clientServices := make([]app.ClientService, 0, len(serviceValues))
+		for _, value := range serviceValues {
+			localPortText, remote, ok := strings.Cut(value, ":")
+			remote = strings.TrimSpace(remote)
+			if !ok || localPortText == "" || remote == "" {
+				return fmt.Errorf("invalid --service %q; expected LOCAL_PORT:SERVICE", value)
+			}
+			localPort, err := strconv.Atoi(localPortText)
+			if err != nil {
+				return fmt.Errorf("invalid --service %q; local port must be a number", value)
+			}
+			clientServices = append(clientServices, app.ClientService{LocalPort: localPort, Remote: remote})
+		}
+		if len(clientServices) > 0 && *listenPort != 0 {
+			return errors.New("--listen-port cannot be combined with --service")
+		}
 		if *device == "" && !interactive {
 			return errors.New("--device is required when stdin is not an interactive terminal")
 		}
 		return app.RunClient(ctx, app.ClientConfig{
 			ListenHost:     *listenHost,
 			ListenPort:     *listenPort,
+			Services:       clientServices,
 			DeviceID:       *device,
 			ScanTimeout:    *scanTimeout,
 			ResumeTimeout:  *resumeTimeout,
@@ -106,17 +127,25 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		transportDebug := flags.Bool("transport-debug", false, "log reliable-link packet and latency diagnostics")
 		preventSleep := flags.Bool("prevent-sleep", false, "prevent automatic system sleep while the server is running")
 		serverIDFile := flags.String("server-id-file", "", "persistent server ID file; defaults to the user configuration directory")
+		var serviceValues stringListFlag
+		flags.Var(&serviceValues, "service", "service-name:server-port; may be repeated")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
 		if !*benchmark && *targetHost == "" {
 			return errors.New("--target-host must not be empty")
 		}
-		if !*benchmark && (*targetPort < 1 || *targetPort > 65535) {
+		if !*benchmark && len(serviceValues) == 0 && (*targetPort < 1 || *targetPort > 65535) {
 			return errors.New("--target-port is required and must be between 1 and 65535")
+		}
+		if *benchmark && len(serviceValues) > 0 {
+			return errors.New("--benchmark cannot be combined with --service")
 		}
 		if *benchmark && *targetPort != 0 {
 			return errors.New("--benchmark cannot be combined with --target-port")
+		}
+		if len(serviceValues) > 0 && *targetPort != 0 {
+			return errors.New("--service cannot be combined with --target-port")
 		}
 		if *name == "" {
 			return errors.New("--name must not be empty")
@@ -130,9 +159,14 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		if *statsInterval < 0 {
 			return errors.New("--stats-interval must not be negative")
 		}
+		services, err := app.ParseServerServices(serviceValues)
+		if err != nil {
+			return err
+		}
 		return app.RunServer(ctx, app.ServerConfig{
 			TargetHost:     *targetHost,
 			TargetPort:     *targetPort,
+			Services:       services,
 			Name:           *name,
 			DialTimeout:    *dialTimeout,
 			ResumeTimeout:  *resumeTimeout,
@@ -145,6 +179,28 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			PreventSleep:   *preventSleep,
 			ServerIDFile:   *serverIDFile,
 			ErrorOutput:    errorOutput,
+		})
+
+	case "services":
+		flags := newFlagSet("services", errorOutput)
+		device := flags.String("device", "", "Bluetooth server identifier from the scan command")
+		scanTimeout := flags.Duration("scan-timeout", 5*time.Second, "duration of each Bluetooth scan")
+		if err := flags.Parse(args[1:]); err != nil {
+			return flagError(err)
+		}
+		if *scanTimeout <= 0 {
+			return errors.New("--scan-timeout must be greater than zero")
+		}
+		if *device == "" && !interactive {
+			return errors.New("--device is required when stdin is not an interactive terminal")
+		}
+		return app.ListServices(ctx, app.ServicesConfig{
+			DeviceID:    *device,
+			ScanTimeout: *scanTimeout,
+			Interactive: interactive,
+			Input:       input,
+			Output:      output,
+			ErrorOutput: errorOutput,
 		})
 
 	case "benchmark":
@@ -221,6 +277,15 @@ func newFlagSet(name string, output io.Writer) *flag.FlagSet {
 	return flags
 }
 
+type stringListFlag []string
+
+func (f *stringListFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *stringListFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
 func flagError(err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		return nil
@@ -231,8 +296,9 @@ func flagError(err error) error {
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, `Usage:
   lightningbnb scan [--timeout 5s] [--all]
-  lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--device ID] [--compression]
-  lightningbnb server (--target-port PORT | --benchmark) [--compression] [--prevent-sleep]
+  lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--service LOCAL_PORT:SERVICE] [--device ID] [--compression]
+  lightningbnb server (--target-port PORT | --service NAME:PORT ...) [--compression] [--prevent-sleep]
+  lightningbnb services --device ID
   lightningbnb benchmark [--device ID] [--duration 30s] [--compression]
   lightningbnb version`)
 }

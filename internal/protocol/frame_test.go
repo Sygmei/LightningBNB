@@ -27,7 +27,7 @@ func TestFrameRejectsMalformedInput(t *testing.T) {
 	t.Parallel()
 	tests := []Frame{
 		{Type: FrameOpen, StreamID: 0},
-		{Type: FrameOpen, StreamID: 1, Payload: []byte{1}},
+		{Type: FrameOpen, StreamID: 1, Payload: make([]byte, 129)},
 		{Type: FrameData, StreamID: 1},
 		{Type: FrameWindowUpdate, StreamID: 1, Payload: make([]byte, 4)},
 		{Type: 99, StreamID: 1},

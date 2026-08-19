@@ -1,6 +1,6 @@
 # LightningBNB
 
-LightningBNB is a resumable TCP bridge over Bluetooth Low Energy (BLE). A client listens on a local TCP port, multiplexes incoming connections over one BLE GATT link, and a server forwards every stream to one operator-selected TCP target.
+LightningBNB is a resumable TCP bridge over Bluetooth Low Energy (BLE). A client listens on one or more local TCP ports, multiplexes incoming connections over one BLE GATT link, and a server forwards each stream to an operator-selected TCP service.
 
 ## Platform support
 
@@ -44,8 +44,11 @@ Build on the operating system where the binary will run:
 Pair the two computers with the operating-system Bluetooth tools first, then start the server on the computer that can reach the target.
 
 ```sh
-# Forward every bridged stream to localhost:8080 on the server.
+# Forward every bridged stream to localhost:8080 on the server (legacy form).
 ./lightningbnb server --target-port 8080
+
+# Advertise several server-side TCP services.
+./lightningbnb server --service http:1180 --service https:11443
 
 # Find the server from the client computer.
 ./lightningbnb scan --timeout 5s
@@ -55,6 +58,15 @@ Pair the two computers with the operating-system Bluetooth tools first, then sta
 
 # Or use the identifier printed by scan (required without an interactive TTY).
 ./lightningbnb client --device DEVICE_ID
+
+# Map local ports to named services. The client may use only a subset.
+./lightningbnb client --device DEVICE_ID --service 1180:http --service 11443:https
+
+# A service's server port can be used directly when it was advertised.
+./lightningbnb client --device DEVICE_ID --service 1180:1180
+
+# List the services advertised by one server.
+./lightningbnb services --device DEVICE_ID
 ```
 
 For compressible traffic such as HTTP, JSON, and LLM token streams, allow compression on the server and request it on the client:
@@ -79,6 +91,7 @@ LISTEN_ADDR=127.0.0.1:54321
 ```
 
 Connect an ordinary TCP application to that address. The port is selected by the operating system unless `--listen-port` is provided.
+With `--service`, the client prints one `LISTEN_ADDR[service]=...` line per local listener.
 
 ### Client flags
 
@@ -92,6 +105,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --stats-interval    live traffic stats interval; 0 disables stats (default 1s)
 --compression       compress TCP payloads; the server must allow compression
 --transport-debug   log reliable-link packet, ACK, retransmission, and send-latency diagnostics
+--service           local-port:server-service; repeat for multiple local listeners
 ```
 
 ### Server flags
@@ -109,6 +123,7 @@ Connect an ordinary TCP application to that address. The port is selected by the
 --prevent-sleep     prevent automatic system sleep while the server is running
 --server-id-file    persistent server ID file (default: OS user configuration directory)
 --transport-debug   log reliable-link packet, ACK, retransmission, and send-latency diagnostics
+--service           service-name:server-port; repeat to advertise multiple targets
 ```
 
 `--prevent-sleep` keeps the system awake for the lifetime of the server process without forcing the display to remain on. The native inhibitor is released on clean shutdown. On Windows, explicit user actions such as selecting Sleep or closing a laptop lid can still suspend the computer.

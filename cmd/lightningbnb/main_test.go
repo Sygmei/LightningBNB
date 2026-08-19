@@ -23,6 +23,44 @@ func TestServerRequiresTargetPort(t *testing.T) {
 	}
 }
 
+func TestServiceFlagsAreAvailable(t *testing.T) {
+	var output bytes.Buffer
+	for _, command := range []string{"client", "server"} {
+		t.Run(command, func(t *testing.T) {
+			if err := run(context.Background(), []string{command, "--help"}, strings.NewReader(""), &output, &output, false); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if !strings.Contains(output.String(), "-service") {
+		t.Fatalf("service flag is not documented: %q", output.String())
+	}
+}
+
+func TestServerServiceValidationHappensBeforeStartingBluetooth(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"server", "--service", "1180:1180"}, strings.NewReader(""), &output, &output, false)
+	if err == nil || !strings.Contains(err.Error(), "must not be numeric") {
+		t.Fatalf("server service error = %v", err)
+	}
+}
+
+func TestClientServiceValidationHappensBeforeStartingBluetooth(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"client", "--device", "test", "--service", "0:http"}, strings.NewReader(""), &output, &output, false)
+	if err == nil || !strings.Contains(err.Error(), "local port") {
+		t.Fatalf("client service error = %v", err)
+	}
+}
+
+func TestServicesRequiresDeviceWithoutTerminal(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"services"}, strings.NewReader(""), &output, &output, false)
+	if err == nil || !strings.Contains(err.Error(), "--device is required") {
+		t.Fatalf("services error = %v", err)
+	}
+}
+
 func TestClientRejectsNegativeStatsInterval(t *testing.T) {
 	var output bytes.Buffer
 	err := run(
