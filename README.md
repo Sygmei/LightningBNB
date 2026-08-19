@@ -41,14 +41,14 @@ Build on the operating system where the binary will run:
 
 ## Releases and containers
 
-Pushing a `v*` tag starts the release workflow. It publishes native binaries for Linux, macOS, and Windows to a GitHub Release, and publishes a multi-architecture Linux container image for `amd64` and `arm64` at `ghcr.io/sygmei/lightningbnb`.
+Pushing a version tag such as `1.0.0` starts the release workflow. It publishes native binaries for Linux, macOS, and Windows to a GitHub Release, and publishes a multi-architecture Linux container image for `amd64` and `arm64` at `ghcr.io/sygmei/lightningbnb`.
 
 The container uses the host Linux Bluetooth stack through system D-Bus. A typical server invocation is:
 
 ```sh
 docker run --rm --network host \
   -v /run/dbus:/run/dbus:ro \
-  ghcr.io/sygmei/lightningbnb:v1.0.0 \
+  ghcr.io/sygmei/lightningbnb:1.0.0 \
   server --target-port 8080
 ```
 
