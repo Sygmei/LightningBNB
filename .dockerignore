@@ -1,0 +1,6 @@
+.git
+.github
+docs
+*.exe
+lightningbnb
+server-debug.log

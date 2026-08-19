@@ -39,6 +39,19 @@ Build on the operating system where the binary will run:
 - macOS: install Xcode command-line tools with `xcode-select --install`. The terminal application running LightningBNB must have Bluetooth permission under System Settings → Privacy & Security → Bluetooth.
 - Windows: use a current Go toolchain. Server mode additionally requires a Bluetooth adapter and driver supporting the BLE peripheral/GATT server role.
 
+## Releases and containers
+
+Pushing a `v*` tag starts the release workflow. It publishes native binaries for Linux, macOS, and Windows to a GitHub Release, and publishes a multi-architecture Linux container image for `amd64` and `arm64` at `ghcr.io/sygmei/lightningbnb`.
+
+The container uses the host Linux Bluetooth stack through system D-Bus. A typical server invocation is:
+
+```sh
+docker run --rm --network host \
+  -v /run/dbus:/run/dbus:ro \
+  ghcr.io/sygmei/lightningbnb:v1.0.0 \
+  server --target-port 8080
+```
+
 ## Usage
 
 Pair the two computers with the operating-system Bluetooth tools first, then start the server on the computer that can reach the target.
@@ -224,4 +237,4 @@ go vet ./...
 
 The test suite uses deterministic fake BLE transports and loopback TCP listeners; Bluetooth hardware is required only for the manual platform matrix.
 
-UDP, a macOS server, GUI/service installation, durable resumption across process restarts, and packaged release artifacts are outside v1.
+UDP, a macOS server, GUI/service installation, and durable resumption across process restarts are outside v1.
