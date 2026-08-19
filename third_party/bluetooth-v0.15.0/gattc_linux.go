@@ -304,7 +304,7 @@ func (c *DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) er
 		if stopNotifyErr == nil {
 			return removeSignalErr
 		}
-		return stopNotifyErr		
+		return stopNotifyErr
 	}
 }
 

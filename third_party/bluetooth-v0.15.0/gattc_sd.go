@@ -20,8 +20,8 @@ const (
 )
 
 var (
-_ GATTCService        = (*DeviceService)(nil)
-_ GATTCCharacteristic = (*DeviceCharacteristic)(nil)
+	_ GATTCService        = (*DeviceService)(nil)
+	_ GATTCCharacteristic = (*DeviceCharacteristic)(nil)
 )
 
 var (
