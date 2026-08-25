@@ -53,6 +53,14 @@ func TestClientServiceValidationHappensBeforeStartingBluetooth(t *testing.T) {
 	}
 }
 
+func TestClientAllServicesFlagValidationHappensBeforeStartingBluetooth(t *testing.T) {
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"client", "--device", "test", "--all-services", "--service", "1180:http"}, strings.NewReader(""), &output, &output, false)
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("client all-services error = %v", err)
+	}
+}
+
 func TestServicesRequiresDeviceWithoutTerminal(t *testing.T) {
 	var output bytes.Buffer
 	err := run(context.Background(), []string{"services"}, strings.NewReader(""), &output, &output, false)

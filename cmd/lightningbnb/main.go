@@ -56,6 +56,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
 		compression := flags.Bool("compression", false, "compress multiplexed TCP payloads; server must allow compression")
 		transportDebug := flags.Bool("transport-debug", false, "log reliable-link packet and latency diagnostics")
+		allServices := flags.Bool("all-services", false, "forward every advertised service on its advertised local port")
 		var serviceValues stringListFlag
 		flags.Var(&serviceValues, "service", "local-port:server-service; may be repeated")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -92,6 +93,12 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		if len(clientServices) > 0 && *listenPort != 0 {
 			return errors.New("--listen-port cannot be combined with --service")
 		}
+		if *allServices && len(clientServices) > 0 {
+			return errors.New("--all-services cannot be combined with --service")
+		}
+		if *allServices && *listenPort != 0 {
+			return errors.New("--listen-port cannot be combined with --all-services")
+		}
 		if *device == "" && !interactive {
 			return errors.New("--device is required when stdin is not an interactive terminal")
 		}
@@ -99,6 +106,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			ListenHost:     *listenHost,
 			ListenPort:     *listenPort,
 			Services:       clientServices,
+			AllServices:    *allServices,
 			DeviceID:       *device,
 			ScanTimeout:    *scanTimeout,
 			ResumeTimeout:  *resumeTimeout,

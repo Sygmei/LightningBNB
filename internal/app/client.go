@@ -22,6 +22,7 @@ type ClientConfig struct {
 	ListenHost         string
 	ListenPort         int
 	Services           []ClientService
+	AllServices        bool
 	DeviceID           string
 	ScanTimeout        time.Duration
 	ResumeTimeout      time.Duration
@@ -54,32 +55,42 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	if err := ValidateClientServices(cfg.Services); err != nil {
 		return err
 	}
+	if cfg.AllServices && len(cfg.Services) > 0 {
+		return errors.New("--all-services cannot be combined with --service")
+	}
+	if cfg.AllServices && cfg.ListenPort != 0 {
+		return errors.New("--listen-port cannot be combined with --all-services")
+	}
 	listeners := make(map[string][]net.Listener)
 	var allListeners []net.Listener
-	if len(cfg.Services) == 0 {
-		listener, listenErr := net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)))
-		if listenErr != nil {
-			return fmt.Errorf("listen for local TCP connections: %w", listenErr)
-		}
-		listeners[""] = []net.Listener{listener}
-		allListeners = append(allListeners, listener)
-		if !cfg.SuppressListenAddr {
-			_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR=%s\n", listener.Addr())
-		}
-	} else {
-		for _, service := range cfg.Services {
+	openListeners := func(services []ClientService) error {
+		for _, service := range services {
 			listener, listenErr := net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(service.LocalPort)))
 			if listenErr != nil {
-				for _, opened := range allListeners {
-					_ = opened.Close()
-				}
 				return fmt.Errorf("listen for service %q: %w", service.Remote, listenErr)
 			}
 			listeners[service.Remote] = append(listeners[service.Remote], listener)
 			allListeners = append(allListeners, listener)
 			if !cfg.SuppressListenAddr {
-				_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR[%s]=%s\n", service.Remote, listener.Addr())
+				if service.Remote == "" {
+					_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR=%s\n", listener.Addr())
+				} else {
+					_, _ = fmt.Fprintf(cfg.Output, "LISTEN_ADDR[%s]=%s\n", service.Remote, listener.Addr())
+				}
 			}
+		}
+		return nil
+	}
+	if !cfg.AllServices {
+		services := cfg.Services
+		if len(services) == 0 {
+			services = []ClientService{{LocalPort: cfg.ListenPort, Remote: ""}}
+		}
+		if err := openListeners(services); err != nil {
+			for _, opened := range allListeners {
+				_ = opened.Close()
+			}
+			return err
 		}
 	}
 	defer func() {
@@ -112,7 +123,18 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	defer stopStats()
 	clientBridge := bridge.NewClientWithTraffic(cfg.ResumeTimeout, cfg.MaxConnections, logger.Printf, counter)
 	bridgeErr := make(chan error, 1)
-	go func() { bridgeErr <- clientBridge.ServeServices(ctx, listeners) }()
+	bridgeStarted := false
+	startBridge := func() {
+		if bridgeStarted {
+			return
+		}
+		bridgeStarted = true
+		go func() { bridgeErr <- clientBridge.ServeServices(ctx, listeners) }()
+	}
+	if !cfg.AllServices {
+		startBridge()
+	}
+	allServicesStarted := false
 	var benchmarkDone <-chan error
 	var cancelBenchmark context.CancelFunc
 	defer func() {
@@ -234,6 +256,37 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				linkSession.PacketMTU(),
 				linkSession.Config().Compression,
 			)
+			if cfg.AllServices && !allServicesStarted {
+				servicesCtx, cancelServices := context.WithTimeout(ctx, 10*time.Second)
+				advertised, servicesErr := muxSession.Services(servicesCtx)
+				cancelServices()
+				if servicesErr != nil {
+					_ = muxSession.Close()
+					_ = linkSession.Close()
+					return fmt.Errorf("discover advertised services: %w", servicesErr)
+				}
+				clientServices, mappingErr := ClientServicesForAdvertised(advertised)
+				if mappingErr != nil {
+					_ = muxSession.Close()
+					_ = linkSession.Close()
+					return mappingErr
+				}
+				if len(clientServices) == 0 {
+					_ = muxSession.Close()
+					_ = linkSession.Close()
+					return errors.New("server advertised no services")
+				}
+				if err := openListeners(clientServices); err != nil {
+					for _, opened := range allListeners {
+						_ = opened.Close()
+					}
+					_ = muxSession.Close()
+					_ = linkSession.Close()
+					return err
+				}
+				startBridge()
+				allServicesStarted = true
+			}
 			if cfg.Benchmark != nil && benchmarkDone == nil {
 				benchmarkCfg := *cfg.Benchmark
 				benchmarkCfg.ErrorOutput = cfg.ErrorOutput

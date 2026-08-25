@@ -1,8 +1,11 @@
 package app
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Sygmei/LightningBNB/internal/mux"
 )
 
 func TestParseServerServices(t *testing.T) {
@@ -29,5 +32,23 @@ func TestValidateClientServices(t *testing.T) {
 	}
 	if err := ValidateClientServices([]ClientService{{LocalPort: 1180, Remote: ""}}); err == nil || !strings.Contains(err.Error(), "target") {
 		t.Fatalf("invalid client service error = %v", err)
+	}
+}
+
+func TestClientServicesForAdvertised(t *testing.T) {
+	services, err := ClientServicesForAdvertised([]mux.Service{{Name: "http", Port: 1180}, {Port: 11443}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ClientService{{LocalPort: 1180, Remote: "http"}, {LocalPort: 11443, Remote: "11443"}}
+	if !reflect.DeepEqual(services, want) {
+		t.Fatalf("services = %+v, want %+v", services, want)
+	}
+}
+
+func TestClientServicesForAdvertisedRejectsDuplicatePorts(t *testing.T) {
+	_, err := ClientServicesForAdvertised([]mux.Service{{Name: "http", Port: 1180}, {Name: "admin", Port: 1180}})
+	if err == nil || !strings.Contains(err.Error(), "duplicate port") {
+		t.Fatalf("duplicate port error = %v", err)
 	}
 }

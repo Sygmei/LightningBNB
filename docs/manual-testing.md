@@ -23,8 +23,9 @@ For service forwarding, run the server with at least two declarations such as
 mapping, then with both mappings, and verify that `services --device ID` lists
 the aliases and ports and that a numeric mapping such as `1180:1180` works only
 for an advertised port.
-5. Exercise a protocol that uses TCP half-close: send a request, close only the client write direction, and verify the complete response still arrives.
-6. Stop the target and verify a new local connection closes with a target error in the server/client diagnostics without disrupting existing streams.
+5. Run the client with `--all-services` and verify that it prints one listener for each advertised port and that connections to those local ports reach the corresponding server targets.
+6. Exercise a protocol that uses TCP half-close: send a request, close only the client write direction, and verify the complete response still arrives.
+7. Stop the target and verify a new local connection closes with a target error in the server/client diagnostics without disrupting existing streams.
 
 ## Recovery scenarios
 

@@ -78,6 +78,9 @@ Pair the two computers with the operating-system Bluetooth tools first, then sta
 # A service's server port can be used directly when it was advertised.
 ./lightningbnb client --device DEVICE_ID --service 1180:1180
 
+# Automatically forward every advertised service on the same local port.
+./lightningbnb client --device DEVICE_ID --all-services
+
 # List the services advertised by one server.
 ./lightningbnb services --device DEVICE_ID
 ```
@@ -104,7 +107,7 @@ LISTEN_ADDR=127.0.0.1:54321
 ```
 
 Connect an ordinary TCP application to that address. The port is selected by the operating system unless `--listen-port` is provided.
-With `--service`, the client prints one `LISTEN_ADDR[service]=...` line per local listener.
+With `--service`, the client prints one `LISTEN_ADDR[service]=...` line per local listener. With `--all-services`, it prints one such line for each advertised service and listens on the advertised port.
 
 ### Client flags
 
@@ -119,7 +122,13 @@ With `--service`, the client prints one `LISTEN_ADDR[service]=...` line per loca
 --compression       compress TCP payloads; the server must allow compression
 --transport-debug   log reliable-link packet, ACK, retransmission, and send-latency diagnostics
 --service           local-port:server-service; repeat for multiple local listeners
+--all-services      forward every advertised service on its advertised local port
 ```
+
+`--all-services` discovers the server's `SERVICE_LIST` after connecting, then
+listens on each advertised port locally. Named services are selected by alias;
+unnamed legacy services are selected by their advertised numeric port. It
+cannot be combined with `--service` or an explicit `--listen-port`.
 
 ### Server flags
 

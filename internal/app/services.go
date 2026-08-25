@@ -65,3 +65,27 @@ func ValidateClientServices(values []ClientService) error {
 	}
 	return nil
 }
+
+// ClientServicesForAdvertised returns a local mapping for every service the
+// server advertised. The local port deliberately matches the server port so
+// the all-services mode is predictable without requiring another mapping.
+func ClientServicesForAdvertised(values []mux.Service) ([]ClientService, error) {
+	services := make([]ClientService, 0, len(values))
+	seenPorts := make(map[int]bool)
+	for _, service := range values {
+		if service.Port < 1 || service.Port > 65535 {
+			return nil, fmt.Errorf("advertised service %q has invalid port %d", service.Name, service.Port)
+		}
+		if seenPorts[service.Port] {
+			return nil, fmt.Errorf("advertised services contain duplicate port %d; cannot expose both on the same local port", service.Port)
+		}
+		seenPorts[service.Port] = true
+
+		selector := service.Name
+		if selector == "" {
+			selector = strconv.Itoa(service.Port)
+		}
+		services = append(services, ClientService{LocalPort: service.Port, Remote: selector})
+	}
+	return services, nil
+}
