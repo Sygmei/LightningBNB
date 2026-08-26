@@ -37,6 +37,20 @@ func TestServiceFlagsAreAvailable(t *testing.T) {
 	}
 }
 
+func TestBluetoothScanTimeoutDefaultsToThirtySeconds(t *testing.T) {
+	for _, command := range []string{"scan", "client", "services", "benchmark"} {
+		t.Run(command, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := run(context.Background(), []string{command, "--help"}, strings.NewReader(""), &output, &output, false); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), "default 30s") {
+				t.Fatalf("%s help does not show the 30s scan default: %q", command, output.String())
+			}
+		})
+	}
+}
+
 func TestServerServiceValidationHappensBeforeStartingBluetooth(t *testing.T) {
 	var output bytes.Buffer
 	err := run(context.Background(), []string{"server", "--service", "1180:1180"}, strings.NewReader(""), &output, &output, false)

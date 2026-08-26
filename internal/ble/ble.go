@@ -105,7 +105,7 @@ func (a *Adapter) Enable() error {
 }
 
 func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, error) {
-	devices, err := a.scan(ctx, duration, true)
+	devices, err := a.scan(ctx, duration, true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -129,19 +129,33 @@ func (a *Adapter) Scan(ctx context.Context, duration time.Duration) ([]Device, e
 // GATT connection to read each stable server identity. Interactive selection
 // uses this path so the selected server is connected exactly once.
 func (a *Adapter) Discover(ctx context.Context, duration time.Duration) ([]Device, error) {
-	return a.scan(ctx, duration, true)
+	return a.scan(ctx, duration, true, nil)
+}
+
+// DiscoverWithCallback reports each newly recognized LightningBNB device as
+// soon as its advertisement has been observed. It intentionally does not
+// probe the GATT identity, so interactive callers can render results while
+// the scan is still running and connect exactly once after selection.
+func (a *Adapter) DiscoverWithCallback(ctx context.Context, duration time.Duration, onDevice func(Device)) ([]Device, error) {
+	return a.scan(ctx, duration, true, onDevice)
 }
 
 func (a *Adapter) ScanAll(ctx context.Context, duration time.Duration) ([]Device, error) {
-	return a.scan(ctx, duration, false)
+	return a.scan(ctx, duration, false, nil)
 }
 
-func (a *Adapter) scan(ctx context.Context, duration time.Duration, onlyLightningBNB bool) ([]Device, error) {
+// ScanAllWithCallback reports each newly observed BLE advertisement while the
+// scan is in progress. The returned slice remains the complete merged result.
+func (a *Adapter) ScanAllWithCallback(ctx context.Context, duration time.Duration, onDevice func(Device)) ([]Device, error) {
+	return a.scan(ctx, duration, false, onDevice)
+}
+
+func (a *Adapter) scan(ctx context.Context, duration time.Duration, onlyLightningBNB bool, onDevice func(Device)) ([]Device, error) {
 	if err := a.Enable(); err != nil {
 		return nil, fmt.Errorf("enable Bluetooth: %w", err)
 	}
 	if duration <= 0 {
-		duration = 5 * time.Second
+		duration = 30 * time.Second
 	}
 	a.scanMu.Lock()
 	defer a.scanMu.Unlock()
@@ -154,9 +168,6 @@ func (a *Adapter) scan(ctx context.Context, duration time.Duration, onlyLightnin
 	go func() {
 		scanErr <- a.native.Scan(func(_ *bluetooth.Adapter, result bluetooth.ScanResult) {
 			matches := isLightningBNB(result.AdvertisementPayload)
-			if onlyLightningBNB && !matches {
-				return
-			}
 			name := result.LocalName()
 			if markerName := advertisedMarkerName(result.AdvertisementPayload); markerName != "" {
 				name = markerName
@@ -173,11 +184,19 @@ func (a *Adapter) scan(ctx context.Context, duration time.Duration, onlyLightnin
 				address:          result.Address,
 			}
 			mu.Lock()
-			if previous, ok := devices[device.ID]; ok {
+			previous, existed := devices[device.ID]
+			if existed {
 				device = mergeDevice(previous, device)
 			}
 			devices[device.ID] = device
+			report := onDevice != nil && device.LightningBNB && (!existed || !previous.LightningBNB)
+			if onDevice != nil && !onlyLightningBNB {
+				report = !existed || (!previous.LightningBNB && device.LightningBNB)
+			}
 			mu.Unlock()
+			if report {
+				onDevice(device)
+			}
 		})
 	}()
 
@@ -206,6 +225,9 @@ func (a *Adapter) scan(ctx context.Context, duration time.Duration, onlyLightnin
 	mu.Lock()
 	result := make([]Device, 0, len(devices))
 	for _, device := range devices {
+		if onlyLightningBNB && !device.LightningBNB {
+			continue
+		}
 		result = append(result, device)
 	}
 	mu.Unlock()
@@ -259,7 +281,7 @@ func appendUnique(values []string, additions ...string) []string {
 }
 
 func (a *Adapter) Find(ctx context.Context, id string, duration time.Duration) (Device, error) {
-	devices, err := a.scan(ctx, duration, true)
+	devices, err := a.scan(ctx, duration, true, nil)
 	if err != nil {
 		return Device{}, err
 	}

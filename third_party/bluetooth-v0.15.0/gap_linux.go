@@ -49,6 +49,13 @@ var errAdvertisementNotStarted = errors.New("bluetooth: advertisement is not sta
 var errAdvertisementAlreadyStarted = errors.New("bluetooth: advertisement is already started")
 var errAdaptorNotPowered = errors.New("bluetooth: adaptor is not powered")
 
+func bluezAdvertisementType(options AdvertisementOptions) string {
+	if options.AdvertisementType == AdvertisingTypeNonConnInd {
+		return "broadcast"
+	}
+	return "peripheral"
+}
+
 // Unique ID per advertisement (to generate a unique object path).
 var advertisementID uint64
 
@@ -109,7 +116,7 @@ func (a *Advertisement) Configure(options AdvertisementOptions) error {
 	a.path = dbus.ObjectPath(fmt.Sprintf("/org/tinygo/bluetooth/advertisement%d", id))
 	propsSpec := map[string]map[string]*prop.Prop{
 		"org.bluez.LEAdvertisement1": {
-			"Type":             {Value: "broadcast"},
+			"Type":             {Value: bluezAdvertisementType(options)},
 			"ServiceUUIDs":     {Value: serviceUUIDs},
 			"ManufacturerData": {Value: manufacturerData},
 			"LocalName":        {Value: options.LocalName},

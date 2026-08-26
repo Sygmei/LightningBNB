@@ -140,10 +140,14 @@ func TestTrafficDashboardShowsLinkHealthDot(t *testing.T) {
 	console := newRuntimeConsole(&bytes.Buffer{}, true)
 	console.color = false
 	console.ReportTraffic(traffic.Snapshot{}, traffic.Snapshot{}, time.Second, false)
-	console.ReportLinkHealth(link.TransportSnapshot{Bound: true})
+	lastHeartbeat := time.Date(2026, time.August, 26, 14, 5, 6, 0, time.Local)
+	console.ReportLinkHealth(link.TransportSnapshot{Bound: true, LastHeartbeat: lastHeartbeat})
 	lines := strings.Join(console.lines, "\n")
 	if !strings.Contains(lines, "● link HEALTHY") {
 		t.Fatalf("healthy link indicator = %q", lines)
+	}
+	if !strings.Contains(lines, "hb last 14:05:06") {
+		t.Fatalf("last heartbeat indicator = %q", lines)
 	}
 	console.ReportLinkHealth(link.TransportSnapshot{Bound: true, HeartbeatPending: true})
 	if !strings.Contains(strings.Join(console.lines, "\n"), "● link CHECKING") {

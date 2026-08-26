@@ -10,6 +10,7 @@ type TransportSnapshot struct {
 	HeartbeatPending             bool
 	HeartbeatConsecutiveFailures int
 	LastReceived                 time.Time
+	LastHeartbeat                time.Time
 	DataTXPackets                uint64
 	DataTXBytes                  uint64
 	DataRXPackets                uint64
@@ -81,6 +82,7 @@ func (s *Session) TransportSnapshot() TransportSnapshot {
 		snapshot.HeartbeatPending = s.current.heartbeatPending
 		snapshot.HeartbeatConsecutiveFailures = s.current.heartbeatFailures
 		snapshot.LastReceived = s.current.lastRX
+		snapshot.LastHeartbeat = s.current.lastHeartbeat
 		snapshot.PacketMTU = s.current.mtu
 		snapshot.FlightLimitPackets = max(initialFlightWindowPackets, s.current.flightPackets)
 		if s.current.sendNext > s.txBase {

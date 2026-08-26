@@ -317,25 +317,40 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 }
 
 func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Duration, input io.Reader, output io.Writer) (ble.Device, error) {
-	// Resolve the GATT identity while listing devices. The platform address
-	// (Device.ID) can change between BLE sessions, whereas ServerID is persisted
-	// by the server and is the value that must be passed back to --device.
-	devices, err := adapter.Scan(ctx, timeout)
-	if err != nil {
-		return ble.Device{}, err
+	if inputFile, outputFile, ok := terminalPickerFiles(input, output); ok {
+		return chooseDeviceTUI(ctx, adapter, timeout, inputFile, outputFile)
 	}
-	sortDevices(devices)
-	if len(devices) == 0 {
-		return ble.Device{}, errors.New("no LightningBNB servers found")
-	}
+	return chooseDeviceLine(ctx, adapter, timeout, input, output)
+}
+
+func chooseDeviceLine(ctx context.Context, adapter *ble.Adapter, timeout time.Duration, input io.Reader, output io.Writer) (ble.Device, error) {
+	// Render advertisements as they arrive. The platform address (Device.ID)
+	// can change between BLE sessions, so the selected device is connected once
+	// below and its persisted ServerID is learned from that transport session.
 	_, _ = fmt.Fprintln(output, "Nearby LightningBNB servers:")
-	for i, device := range devices {
+	var discoveredIDs []string
+	devices, err := adapter.DiscoverWithCallback(ctx, timeout, func(device ble.Device) {
+		discoveredIDs = append(discoveredIDs, device.ID)
 		name := deviceDisplayName(device)
 		selectedID := device.ServerID
 		if selectedID == "" {
 			selectedID = device.ID
 		}
-		_, _ = fmt.Fprintf(output, "  %d) %s  RSSI=%d  ID=%s  PLATFORM_ID=%s\n", i+1, name, device.RSSI, selectedID, device.ID)
+		_, _ = fmt.Fprintf(output, "  %d) %s  RSSI=%d  ID=%s  PLATFORM_ID=%s\n", len(discoveredIDs), name, device.RSSI, selectedID, device.ID)
+	})
+	if err != nil {
+		return ble.Device{}, err
+	}
+	if len(discoveredIDs) == 0 {
+		return ble.Device{}, errors.New("no LightningBNB servers found")
+	}
+	devicesByID := make(map[string]ble.Device, len(devices))
+	for _, device := range devices {
+		devicesByID[device.ID] = device
+	}
+	orderedDevices := make([]ble.Device, 0, len(discoveredIDs))
+	for _, id := range discoveredIDs {
+		orderedDevices = append(orderedDevices, devicesByID[id])
 	}
 	_, _ = fmt.Fprint(output, "Select server: ")
 	scanner := bufio.NewScanner(input)
@@ -346,10 +361,10 @@ func chooseDevice(ctx context.Context, adapter *ble.Adapter, timeout time.Durati
 		return ble.Device{}, errors.New("no server selection provided")
 	}
 	selection, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
-	if err != nil || selection < 1 || selection > len(devices) {
+	if err != nil || selection < 1 || selection > len(orderedDevices) {
 		return ble.Device{}, errors.New("invalid server selection")
 	}
-	return devices[selection-1], nil
+	return orderedDevices[selection-1], nil
 }
 
 func deviceDisplayName(device ble.Device) string {

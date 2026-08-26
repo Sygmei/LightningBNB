@@ -102,7 +102,9 @@ func (c *clientPacketConn) Send(ctx context.Context, packet []byte) error {
 		return io.ErrClosedPipe
 	default:
 	}
-	c.sendMu.Lock()
+	if err := lockPacketSend(ctx, c.done, &c.sendMu); err != nil {
+		return err
+	}
 	defer c.sendMu.Unlock()
 	var err error
 	if c.withACK {
