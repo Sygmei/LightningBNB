@@ -48,10 +48,14 @@ func WriteFrame(w io.Writer, frame Frame) error {
 	header[0] = byte(frame.Type)
 	binary.BigEndian.PutUint32(header[1:5], frame.StreamID)
 	binary.BigEndian.PutUint32(header[5:9], uint32(len(frame.Payload)))
-	if err := writeAll(w, header); err != nil {
-		return err
-	}
-	return writeAll(w, frame.Payload)
+	// Submit the complete mux frame in one writer call. In particular, the
+	// reliable BLE session may otherwise transmit the header as a separate
+	// packet before the payload arrives in its buffer, wasting a packet and
+	// adding avoidable scheduling latency.
+	encoded := make([]byte, HeaderSize+len(frame.Payload))
+	copy(encoded, header)
+	copy(encoded[HeaderSize:], frame.Payload)
+	return writeAll(w, encoded)
 }
 
 func ReadFrame(r io.Reader) (Frame, error) {

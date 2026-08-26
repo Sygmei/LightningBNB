@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+type countingWriter struct {
+	bytes.Buffer
+	writes int
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.Buffer.Write(p)
+}
+
 func TestFrameRoundTrip(t *testing.T) {
 	t.Parallel()
 	want := Frame{Type: FrameData, StreamID: 7, Payload: []byte("hello")}
@@ -20,6 +30,21 @@ func TestFrameRoundTrip(t *testing.T) {
 	}
 	if got.Type != want.Type || got.StreamID != want.StreamID || !bytes.Equal(got.Payload, want.Payload) {
 		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestWriteFrameUsesOneWriteForHeaderAndPayload(t *testing.T) {
+	var writer countingWriter
+	frame := Frame{Type: FrameData, StreamID: 7, Payload: []byte("hello")}
+
+	if err := WriteFrame(&writer, frame); err != nil {
+		t.Fatal(err)
+	}
+	if writer.writes != 1 {
+		t.Fatalf("WriteFrame used %d writes, want 1", writer.writes)
+	}
+	if got, err := ReadFrame(bytes.NewReader(writer.Bytes())); err != nil || !bytes.Equal(got.Payload, frame.Payload) {
+		t.Fatalf("round trip = frame=%+v err=%v, want payload %q", got, err, frame.Payload)
 	}
 }
 

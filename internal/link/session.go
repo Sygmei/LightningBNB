@@ -19,17 +19,20 @@ const (
 	DefaultResumeTimeout  = 60 * time.Second
 	DefaultMaxConnections = 32
 
-	retransmitInterval         = time.Second
-	heartbeatInterval          = 3 * time.Second
-	heartbeatResponseTimeout   = 2 * time.Second
-	heartbeatFailureLimit      = 2
-	heartbeatCheckInterval     = 250 * time.Millisecond
-	sendTimeout                = 5 * time.Second
-	liveWriteWindow            = 16 << 10
+	retransmitInterval       = time.Second
+	heartbeatInterval        = 3 * time.Second
+	heartbeatResponseTimeout = 2 * time.Second
+	heartbeatFailureLimit    = 2
+	heartbeatCheckInterval   = 250 * time.Millisecond
+	sendTimeout              = 5 * time.Second
+	// Keep enough queued live data and in-flight packets to cover the
+	// bandwidth-delay product of desktop BLE links. The previous 16 KiB/32-	// packet limits could cap a high-MTU connection near 50 KiB/s when ACK
+	// latency approached 150ms.
+	liveWriteWindow            = 64 << 10
 	fastRetransmitACKs         = 3
 	ackBatchPackets            = 8
 	initialFlightWindowPackets = ackBatchPackets
-	maxFlightWindowPackets     = 32
+	maxFlightWindowPackets     = 128
 	ackMaxDelay                = 40 * time.Millisecond
 	sendLoopInterval           = 10 * time.Millisecond
 )
