@@ -37,7 +37,8 @@ func genericAdvertisementOptions(goos, name string) (bluetooth.AdvertisementOpti
 		return bluetooth.AdvertisementOptions{}, false
 	}
 	return bluetooth.AdvertisementOptions{
-		LocalName:    name,
-		ServiceUUIDs: []bluetooth.UUID{ServiceUUID},
+		AdvertisementType: bluetooth.AdvertisingTypeInd,
+		LocalName:         name,
+		ServiceUUIDs:      []bluetooth.UUID{ServiceUUID},
 	}, true
 }

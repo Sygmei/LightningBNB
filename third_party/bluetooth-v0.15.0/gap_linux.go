@@ -109,7 +109,7 @@ func (a *Advertisement) Configure(options AdvertisementOptions) error {
 	a.path = dbus.ObjectPath(fmt.Sprintf("/org/tinygo/bluetooth/advertisement%d", id))
 	propsSpec := map[string]map[string]*prop.Prop{
 		"org.bluez.LEAdvertisement1": {
-			"Type":             {Value: "broadcast"},
+			"Type":             {Value: linuxAdvertisementType(options.AdvertisementType)},
 			"ServiceUUIDs":     {Value: serviceUUIDs},
 			"ManufacturerData": {Value: manufacturerData},
 			"LocalName":        {Value: options.LocalName},
@@ -141,6 +141,13 @@ func (a *Advertisement) Configure(options AdvertisementOptions) error {
 	}
 
 	return nil
+}
+
+func linuxAdvertisementType(advertisementType AdvertisingType) string {
+	if advertisementType == AdvertisingTypeNonConnInd {
+		return "broadcast"
+	}
+	return "peripheral"
 }
 
 // Start advertisement. May only be called after it has been configured.

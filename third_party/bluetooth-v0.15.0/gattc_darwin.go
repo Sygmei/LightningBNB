@@ -44,7 +44,10 @@ func (d Device) DiscoverServices(uuids []UUID) ([]DeviceService, error) {
 
 	// wait on channel for service discovery
 	select {
-	case <-d.servicesChan:
+	case err := <-d.servicesChan:
+		if err != nil {
+			return nil, err
+		}
 		svcs := []DeviceService{}
 
 		if len(uuids) > 0 {
@@ -143,7 +146,10 @@ func (s DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacteri
 
 	// wait on channel for characteristic discovery
 	select {
-	case <-s.device.charsChan:
+	case err := <-s.device.charsChan:
+		if err != nil {
+			return nil, err
+		}
 		var chars []DeviceCharacteristic
 		if len(uuids) > 0 {
 			// The caller wants to get a list of characteristics in a specific

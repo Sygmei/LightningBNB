@@ -228,13 +228,13 @@ type peripheralDelegate struct {
 // DidDiscoverServices is called when the services for a Peripheral
 // have been discovered.
 func (pd *peripheralDelegate) DidDiscoverServices(prph cbgo.Peripheral, err error) {
-	pd.d.servicesChan <- nil
+	pd.d.servicesChan <- err
 }
 
 // DidDiscoverCharacteristics is called when the characteristics for a Service
 // for a Peripheral have been discovered.
 func (pd *peripheralDelegate) DidDiscoverCharacteristics(prph cbgo.Peripheral, svc cbgo.Service, err error) {
-	pd.d.charsChan <- nil
+	pd.d.charsChan <- err
 }
 
 // DidUpdateValueForCharacteristic is called when the characteristic for a Service

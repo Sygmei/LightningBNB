@@ -44,7 +44,9 @@ func StartServer(ctx context.Context, name string, serverID ServerID) (Periphera
 	adapter.SetConnectHandler(func(_ bluetooth.Device, connected bool) {
 		if !connected {
 			server.closeCurrent()
-			server.scheduleAdvertisementRestart()
+			if runtime.GOOS == "windows" {
+				server.scheduleAdvertisementRestart()
+			}
 		}
 	})
 	server.service = transportService(&server.rx, &server.tx, &server.identity, serverID, func(_ bluetooth.Connection, _ int, packet []byte) {
