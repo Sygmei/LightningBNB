@@ -488,7 +488,7 @@ func TestSessionAcknowledgementDeadline(t *testing.T) {
 	}
 }
 
-func TestSessionHeartbeatRequiresThreeMisses(t *testing.T) {
+func TestSessionHeartbeatRequiresFailureLimitMisses(t *testing.T) {
 	session, err := NewSession(Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -523,6 +523,32 @@ func TestSessionHeartbeatRequiresThreeMisses(t *testing.T) {
 	session.mu.Unlock()
 }
 
+func TestSessionHeartbeatRunsIndependentlyOfApplicationTraffic(t *testing.T) {
+	session, err := NewSession(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	now := time.Now()
+	b := &binding{lastRX: now, heartbeatSentAt: now}
+
+	session.mu.Lock()
+	firstProbeAt := now.Add(heartbeatInterval)
+	probe, detach := session.heartbeatCheckLocked(b, firstProbeAt)
+	if !probe || detach {
+		session.mu.Unlock()
+		t.Fatalf("first periodic heartbeat = probe %t, detach %t", probe, detach)
+	}
+	b.heartbeatPending = false
+	b.lastRX = firstProbeAt
+	secondProbeAt := firstProbeAt.Add(heartbeatInterval)
+	probe, detach = session.heartbeatCheckLocked(b, secondProbeAt)
+	session.mu.Unlock()
+	if !probe || detach {
+		t.Fatalf("second periodic heartbeat after application traffic = probe %t, detach %t", probe, detach)
+	}
+}
+
 func TestSessionHeartbeatPongClearsMissedProbes(t *testing.T) {
 	session, err := NewSession(Config{})
 	if err != nil {
@@ -544,9 +570,13 @@ func TestSessionHeartbeatPongClearsMissedProbes(t *testing.T) {
 		t.Fatal(err)
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
-	if b.heartbeatPending || b.heartbeatFailures != 0 || b.lastRX.Before(now) || session.stats.heartbeatRX != 1 {
-		t.Fatalf("heartbeat state after PONG = pending=%t failures=%d lastRX=%v stats=%+v", b.heartbeatPending, b.heartbeatFailures, b.lastRX, session.stats)
+	if b.heartbeatPending || b.heartbeatFailures != 0 || b.lastRX.Before(now) || b.lastHeartbeat.Before(now) || session.stats.heartbeatRX != 1 {
+		t.Fatalf("heartbeat state after PONG = pending=%t failures=%d lastRX=%v lastHeartbeat=%v stats=%+v", b.heartbeatPending, b.heartbeatFailures, b.lastRX, b.lastHeartbeat, session.stats)
+	}
+	session.mu.Unlock()
+	got := session.TransportSnapshot().LastHeartbeat
+	if got.Before(now) {
+		t.Fatalf("snapshot last heartbeat = %v, want at or after %v", got, now)
 	}
 }
 

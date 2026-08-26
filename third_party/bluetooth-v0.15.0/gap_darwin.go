@@ -59,7 +59,11 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) (err error) {
 	a.scanChan = make(chan error)
 
 	a.cm.Scan(nil, &cbgo.CentralManagerScanOpts{
-		AllowDuplicates: false,
+		// Linux BlueZ may place the service UUID in a scan response while the
+		// local name arrives in the initial advertisement. Keep receiving
+		// callbacks so the application can merge both payloads before deciding
+		// whether a peripheral is LightningBNB.
+		AllowDuplicates: true,
 	})
 
 	// Check whether the scan is stopped. This is necessary to avoid a race

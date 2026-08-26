@@ -41,6 +41,7 @@ type linkHealthState struct {
 	heartbeatPending   bool
 	failures           int
 	applicationPending bool
+	lastHeartbeat      time.Time
 }
 
 type bufferState struct {
@@ -154,6 +155,7 @@ func (c *runtimeConsole) ReportLinkAndBufferFor(session *link.Session, snapshot 
 		heartbeatPending:   snapshot.HeartbeatPending,
 		failures:           snapshot.HeartbeatConsecutiveFailures,
 		applicationPending: opening > 0,
+		lastHeartbeat:      snapshot.LastHeartbeat,
 	}
 	c.bufferState = bufferState{known: true, queued: queued, opening: opening, active: active, bytes: bytes}
 	if len(c.lines) > 0 {
@@ -194,6 +196,7 @@ func (c *runtimeConsole) reportLinkHealth(session *link.Session, snapshot link.T
 		bound:            snapshot.Bound,
 		heartbeatPending: snapshot.HeartbeatPending,
 		failures:         snapshot.HeartbeatConsecutiveFailures,
+		lastHeartbeat:    snapshot.LastHeartbeat,
 	}
 	if len(c.lines) > 0 {
 		c.clearLocked()
@@ -287,7 +290,11 @@ func (c *runtimeConsole) healthLine() string {
 			label, color = "HEALTHY", "32"
 		}
 	}
-	content := fmt.Sprintf("%s link %-9s", dot, label)
+	lastHeartbeat := "--"
+	if !c.linkHealth.lastHeartbeat.IsZero() {
+		lastHeartbeat = c.linkHealth.lastHeartbeat.Local().Format("15:04:05")
+	}
+	content := fmt.Sprintf("%s link %-9s hb last %s", dot, label, lastHeartbeat)
 	line := dashboardLine(content)
 	if c.color {
 		line = strings.Replace(line, dot, c.paint(dot, color), 1)

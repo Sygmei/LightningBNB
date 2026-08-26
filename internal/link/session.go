@@ -20,9 +20,10 @@ const (
 	DefaultMaxConnections = 32
 
 	retransmitInterval         = time.Second
-	heartbeatInterval          = 5 * time.Second
-	heartbeatResponseTimeout   = 3 * time.Second
-	heartbeatFailureLimit      = 3
+	heartbeatInterval          = 3 * time.Second
+	heartbeatResponseTimeout   = 2 * time.Second
+	heartbeatFailureLimit      = 2
+	heartbeatCheckInterval     = 250 * time.Millisecond
 	sendTimeout                = 5 * time.Second
 	liveWriteWindow            = 16 << 10
 	fastRetransmitACKs         = 3
@@ -70,6 +71,7 @@ type binding struct {
 	cancel            context.CancelFunc
 	lastRX            time.Time
 	lastTX            time.Time
+	lastHeartbeat     time.Time
 	heartbeatPending  bool
 	heartbeatSentAt   time.Time
 	heartbeatFailures int
@@ -270,14 +272,15 @@ func (s *Session) attach(conn PacketConn, mtu int) error {
 	old := s.current
 	s.bindGen++
 	b := &binding{
-		conn:          conn,
-		gen:           s.bindGen,
-		mtu:           min(normalizeMTU(conn.MTU()), normalizeMTU(mtu)),
-		cancel:        cancel,
-		lastRX:        now,
-		lastTX:        now,
-		sendNext:      s.txBase,
-		flightPackets: initialFlightWindowPackets,
+		conn:            conn,
+		gen:             s.bindGen,
+		mtu:             min(normalizeMTU(conn.MTU()), normalizeMTU(mtu)),
+		cancel:          cancel,
+		lastRX:          now,
+		lastTX:          now,
+		heartbeatSentAt: now,
+		sendNext:        s.txBase,
+		flightPackets:   initialFlightWindowPackets,
 	}
 	// Pending packets were not cumulatively acknowledged. A replacement binding
 	// can use a different MTU and therefore different fragment boundaries, so
@@ -381,6 +384,7 @@ func (s *Session) handlePacket(b *binding, packet []byte) error {
 			return ErrHandshake
 		}
 		s.stats.heartbeatRX++
+		b.lastHeartbeat = now
 	case packetClose:
 		go s.closeWithError(io.EOF)
 	case packetHelloID:
@@ -594,14 +598,15 @@ func (s *Session) nextPacketLocked(b *binding, now time.Time) []byte {
 	return nil
 }
 
-// heartbeatLoop actively probes an otherwise idle binding. This is separate
-// from sendLoop so a GATT implementation that stops delivering notifications
-// or blocks a data write cannot also prevent liveness detection. A successful
-// PONG (or any other valid packet) resets the failure count. After three
-// unanswered probes the binding is detached and the application reconnect
-// loop can attach a replacement without discarding the resumable session.
+// heartbeatLoop actively probes the binding independently of application
+// traffic. This is separate from sendLoop so a GATT implementation that stops
+// delivering notifications or blocks a data write cannot also prevent
+// liveness detection. A successful PONG (or any other valid packet) resets the
+// failure count. After two unanswered probes the binding is detached and the
+// application reconnect loop can attach a replacement without discarding the
+// resumable session.
 func (s *Session) heartbeatLoop(ctx context.Context, b *binding) {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(heartbeatCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -626,7 +631,7 @@ func (s *Session) heartbeatLoop(ctx context.Context, b *binding) {
 			continue
 		}
 
-		sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+		sendCtx, cancel := context.WithTimeout(ctx, heartbeatResponseTimeout)
 		sendStarted := time.Now()
 		err := b.conn.Send(sendCtx, []byte{packetPing})
 		sendDuration := time.Since(sendStarted)
@@ -653,13 +658,9 @@ func (s *Session) heartbeatLoop(ctx context.Context, b *binding) {
 
 // heartbeatCheckLocked decides whether the next probe should be sent. It is
 // kept deterministic so stalled-link behavior can be tested without waiting
-// through real five-second intervals.
+// through real heartbeat intervals.
 func (s *Session) heartbeatCheckLocked(b *binding, now time.Time) (probe, detach bool) {
-	if now.Sub(b.lastRX) < heartbeatInterval {
-		b.heartbeatPending = false
-		b.heartbeatFailures = 0
-		return false, false
-	}
+	probeAfterFailure := false
 	if b.heartbeatPending {
 		if now.Sub(b.heartbeatSentAt) < heartbeatResponseTimeout {
 			return false, false
@@ -670,6 +671,10 @@ func (s *Session) heartbeatCheckLocked(b *binding, now time.Time) (probe, detach
 		if b.heartbeatFailures >= heartbeatFailureLimit {
 			return false, true
 		}
+		probeAfterFailure = true
+	}
+	if !probeAfterFailure && !b.heartbeatSentAt.IsZero() && now.Sub(b.heartbeatSentAt) < heartbeatInterval {
+		return false, false
 	}
 	b.heartbeatPending = true
 	b.heartbeatSentAt = now

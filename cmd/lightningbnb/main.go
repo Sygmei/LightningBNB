@@ -35,7 +35,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 	switch args[0] {
 	case "scan":
 		flags := newFlagSet("scan", errorOutput)
-		timeout := flags.Duration("timeout", 5*time.Second, "how long to scan for LightningBNB servers")
+		timeout := flags.Duration("timeout", 30*time.Second, "how long to scan for LightningBNB servers")
 		all := flags.Bool("all", false, "show all BLE advertisements and payload details for diagnostics")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
@@ -50,7 +50,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		listenHost := flags.String("listen-host", "127.0.0.1", "local TCP listen host")
 		listenPort := flags.Int("listen-port", 0, "local TCP listen port; 0 selects a random port")
 		device := flags.String("device", "", "Bluetooth server identifier from the scan command")
-		scanTimeout := flags.Duration("scan-timeout", 5*time.Second, "duration of each Bluetooth scan")
+		scanTimeout := flags.Duration("scan-timeout", 30*time.Second, "duration of each Bluetooth scan")
 		resumeTimeout := flags.Duration("resume-timeout", 60*time.Second, "time active TCP sessions wait for BLE reconnection")
 		maxConnections := flags.Int("max-connections", 32, "maximum active and queued TCP connections")
 		statsInterval := flags.Duration("stats-interval", time.Second, "live traffic stats interval; 0 disables stats")
@@ -192,7 +192,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 	case "services":
 		flags := newFlagSet("services", errorOutput)
 		device := flags.String("device", "", "Bluetooth server identifier from the scan command")
-		scanTimeout := flags.Duration("scan-timeout", 5*time.Second, "duration of each Bluetooth scan")
+		scanTimeout := flags.Duration("scan-timeout", 30*time.Second, "duration of each Bluetooth scan")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -214,7 +214,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 	case "benchmark":
 		flags := newFlagSet("benchmark", errorOutput)
 		device := flags.String("device", "", "Bluetooth server identifier from the scan command")
-		scanTimeout := flags.Duration("scan-timeout", 5*time.Second, "duration of each Bluetooth scan")
+		scanTimeout := flags.Duration("scan-timeout", 30*time.Second, "duration of each Bluetooth scan")
 		resumeTimeout := flags.Duration("resume-timeout", 60*time.Second, "time the benchmark waits for BLE reconnection")
 		direction := flags.String("direction", "both", "traffic direction: upload, download, or both")
 		duration := flags.Duration("duration", 30*time.Second, "benchmark duration")
@@ -303,7 +303,7 @@ func flagError(err error) error {
 
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, `Usage:
-  lightningbnb scan [--timeout 5s] [--all]
+  lightningbnb scan [--timeout 10s] [--all]
   lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--service LOCAL_PORT:SERVICE] [--device ID] [--compression]
   lightningbnb server (--target-port PORT | --service NAME:PORT ...) [--compression] [--prevent-sleep]
   lightningbnb services --device ID

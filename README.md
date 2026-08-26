@@ -64,10 +64,13 @@ Pair the two computers with the operating-system Bluetooth tools first, then sta
 ./lightningbnb server --service http:1180 --service https:11443
 
 # Find the server from the client computer.
-./lightningbnb scan --timeout 5s
+./lightningbnb scan --timeout 30s
 
 # Start a client with an interactive server picker.
 ./lightningbnb client
+
+# In a terminal, use ↑/↓ to select a server, Enter to connect, or q to cancel.
+# Results appear in the picker as soon as advertisements are received.
 
 # Or use the identifier printed by scan (required without an interactive TTY).
 ./lightningbnb client --device DEVICE_ID
@@ -115,7 +118,7 @@ With `--service`, the client prints one `LISTEN_ADDR[service]=...` line per loca
 --listen-host       local listen host (default 127.0.0.1)
 --listen-port       local listen port; 0 selects a random port (default 0)
 --device            server identifier from `scan`
---scan-timeout      duration of each scan (default 5s)
+--scan-timeout      duration of each scan (default 30s)
 --resume-timeout    BLE recovery window (default 60s)
 --max-connections   active plus waiting TCP connection limit (default 32)
 --stats-interval    live traffic stats interval; 0 disables stats (default 1s)
@@ -190,7 +193,9 @@ When stderr is an interactive terminal, live traffic statistics appear in an in-
 The dashboard includes a link-health dot: green `● link HEALTHY` means the BLE
 binding is receiving traffic or heartbeat responses, amber `● link CHECKING`
 means a heartbeat is awaiting confirmation, and red `● link OFFLINE` means the
-session is currently being rebound or has not connected yet.
+session is currently being rebound or has not connected yet. The same row shows
+the local time of the last received heartbeat (`hb last HH:MM:SS`), or `--`
+before the first heartbeat response.
 
 Its `BUF` row reports queued requests, active requests/streams, and the bytes
 currently retained in the resumable link buffers. Queued client sockets are not
@@ -214,11 +219,12 @@ When BLE disappears, active local and target TCP sockets remain open. New local 
 
 If the same in-memory session reconnects before the effective resume timeout (the lower value configured by the two peers), acknowledged offsets are reconciled and only missing bytes are replayed. If recovery expires or either process restarts, all sockets in that session close and the client starts looking for a fresh session.
 
-The link also performs an active liveness check while idle: a `PING` is sent
-after five seconds without received traffic, each probe allows three seconds
-for a response, and three consecutive missed probes detach the BLE binding.
-The client and server then reuse their normal discovery/advertising loops to
-rebind the same session. This is a transport rebind, not a process restart;
+The link performs an active liveness check independently of application traffic:
+a `PING` is sent every three seconds, each probe allows two seconds for a
+response, and two consecutive missed probes detach the BLE binding. A blocked
+heartbeat write uses the same two-second deadline. The client and server then
+reuse their normal discovery/advertising loops to rebind the same session.
+This is a transport rebind, not a process restart;
 the configured resume timeout still controls how long queued and active TCP
 connections are retained. Transport diagnostics expose `hb-tx`, `hb-rx`, and
 `hb-fail` counters when `--transport-debug` is enabled.
@@ -228,7 +234,7 @@ One server accepts one BLE client at a time. That client may carry up to 32 TCP 
 ## Troubleshooting
 
 - No scan results: confirm Bluetooth is enabled, the server is advertising, and the adapter supports BLE. Windows uses the connectable GATT service advertisement directly and may show the server as `(unnamed)` because WinRT does not let this application attach a local name to that advertisement.
-- Advertisement diagnosis: run `lightningbnb scan --timeout 15s --all` to list unfiltered BLE advertisements, service UUIDs, service data, and manufacturer data. A Windows LightningBNB server should include `13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0` in `SERVICE_UUIDS`.
+- Advertisement diagnosis: run `lightningbnb scan --timeout 15s --all` to list unfiltered BLE advertisements, service UUIDs, service data, and manufacturer data. A Windows LightningBNB server should include `13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0` in `SERVICE_UUIDS`. Interactive client discovery prints each recognized server as soon as it arrives.
 - Linux permission errors: verify BlueZ is running and that the account can use `org.bluez` through the system D-Bus. Distribution policies vary.
 - macOS abort or permission errors: grant Bluetooth access to the terminal application, then restart it.
 - Server reports unsupported mode on macOS: this is intentional in v1; run the server on Windows or Linux.

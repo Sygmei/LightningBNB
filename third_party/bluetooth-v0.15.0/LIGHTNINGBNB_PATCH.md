@@ -17,6 +17,10 @@ write-without-response:
 - `gattc_darwin_test.go` covers readiness notification, missed-callback
   recovery, and timeout behavior.
 
+The Darwin scanner also enables duplicate callbacks. This lets callers merge
+an initial advertisement with a later scan response when BlueZ places the
+service UUID and local name in separate payloads.
+
 The Darwin connection lifecycle also bounds the wait for CoreBluetooth's
 asynchronous cancellation callback and removes a connection-map entry only if
 it still belongs to that attempt. This prevents a timed-out identity probe from

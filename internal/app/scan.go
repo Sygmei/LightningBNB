@@ -16,7 +16,10 @@ func Scan(ctx context.Context, timeout time.Duration, all bool, output io.Writer
 	var devices []ble.Device
 	var err error
 	if all {
-		devices, err = adapter.ScanAll(ctx, timeout)
+		_, _ = fmt.Fprintln(output, "ID\tRSSI\tLIGHTNINGBNB\tNAME\tSERVICE_UUIDS\tSERVICE_DATA\tMANUFACTURER_DATA")
+		devices, err = adapter.ScanAllWithCallback(ctx, timeout, func(device ble.Device) {
+			printAdvertisement(output, device)
+		})
 	} else {
 		devices, err = adapter.Scan(ctx, timeout)
 	}
@@ -33,22 +36,6 @@ func Scan(ctx context.Context, timeout time.Duration, all bool, output io.Writer
 		return nil
 	}
 	if all {
-		_, _ = fmt.Fprintln(output, "ID\tRSSI\tLIGHTNINGBNB\tNAME\tSERVICE_UUIDS\tSERVICE_DATA\tMANUFACTURER_DATA")
-		for _, device := range devices {
-			name := strings.ReplaceAll(device.Name, "\t", " ")
-			if name == "" {
-				name = "(unnamed)"
-			}
-			_, _ = fmt.Fprintf(output, "%s\t%d\t%t\t%s\t%s\t%s\t%s\n",
-				device.ID,
-				device.RSSI,
-				device.LightningBNB,
-				name,
-				strings.Join(device.ServiceUUIDs, ","),
-				strings.Join(device.ServiceData, ","),
-				strings.Join(device.ManufacturerData, ","),
-			)
-		}
 		return nil
 	}
 	_, _ = fmt.Fprintln(output, "SERVER_ID\tPLATFORM_ID\tRSSI\tNAME")
@@ -61,6 +48,22 @@ func Scan(ctx context.Context, timeout time.Duration, all bool, output io.Writer
 		_, _ = fmt.Fprintf(output, "%s\t%s\t%d\t%s\n", serverID, device.ID, device.RSSI, name)
 	}
 	return nil
+}
+
+func printAdvertisement(output io.Writer, device ble.Device) {
+	name := strings.ReplaceAll(device.Name, "\t", " ")
+	if name == "" {
+		name = "(unnamed)"
+	}
+	_, _ = fmt.Fprintf(output, "%s\t%d\t%t\t%s\t%s\t%s\t%s\n",
+		device.ID,
+		device.RSSI,
+		device.LightningBNB,
+		name,
+		strings.Join(device.ServiceUUIDs, ","),
+		strings.Join(device.ServiceData, ","),
+		strings.Join(device.ManufacturerData, ","),
+	)
 }
 
 func sortDevices(devices []ble.Device) {

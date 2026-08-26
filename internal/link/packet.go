@@ -3,7 +3,8 @@ package link
 import "context"
 
 // PacketConn is the small message-oriented transport supplied by the BLE GATT
-// adapter. Send calls are serialized by Session.
+// adapter. Implementations serialize Send calls and must honor their context
+// while waiting for the write path.
 type PacketConn interface {
 	Send(context.Context, []byte) error
 	Receive() <-chan []byte
