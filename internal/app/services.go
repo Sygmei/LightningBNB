@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -18,15 +19,27 @@ func ParseServerServices(values []string) ([]mux.Service, error) {
 	services := make([]mux.Service, 0, len(values))
 	seen := make(map[string]bool)
 	for _, value := range values {
-		name, portText, ok := strings.Cut(value, ":")
+		name, target, ok := strings.Cut(value, ":")
 		name = strings.TrimSpace(name)
-		portText = strings.TrimSpace(portText)
-		if !ok || name == "" || portText == "" || strings.Contains(name, ":") {
-			return nil, fmt.Errorf("invalid --service %q; expected NAME:PORT", value)
+		target = strings.TrimSpace(target)
+		if !ok || name == "" || target == "" {
+			return nil, fmt.Errorf("invalid --service %q; expected NAME:PORT or NAME:HOST:PORT", value)
 		}
 		if len(name) > 64 {
 			return nil, fmt.Errorf("invalid --service %q; service name is too long", value)
 		}
+
+		host := ""
+		portText := target
+		if strings.Contains(target, ":") {
+			var err error
+			host, portText, err = net.SplitHostPort(target)
+			if err != nil || strings.TrimSpace(host) == "" {
+				return nil, fmt.Errorf("invalid --service %q; expected NAME:PORT or NAME:HOST:PORT", value)
+			}
+			host = strings.TrimSpace(host)
+		}
+		portText = strings.TrimSpace(portText)
 		port, err := strconv.Atoi(portText)
 		if err != nil || port < 1 || port > 65535 {
 			return nil, fmt.Errorf("invalid --service %q; port must be between 1 and 65535", value)
@@ -38,7 +51,7 @@ func ParseServerServices(values []string) ([]mux.Service, error) {
 			return nil, fmt.Errorf("duplicate server service %q", name)
 		}
 		seen[name] = true
-		services = append(services, mux.Service{Name: name, Port: port})
+		services = append(services, mux.Service{Name: name, Host: host, Port: port})
 	}
 	return services, nil
 }

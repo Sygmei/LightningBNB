@@ -79,7 +79,7 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	if cfg.Benchmark {
 		logger.Printf("advertising %q in benchmark mode", cfg.Name)
 	} else if len(cfg.Services) > 0 {
-		logger.Printf("advertising %q; forwarding services on %s", cfg.Name, cfg.TargetHost)
+		logger.Printf("advertising %q; forwarding configured services", cfg.Name)
 	} else {
 		logger.Printf("advertising %q; forwarding TCP streams to %s", cfg.Name, target)
 	}

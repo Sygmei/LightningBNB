@@ -51,8 +51,10 @@ type Session struct {
 
 // Service is a TCP target advertised by the server. Name is the selector
 // used by clients; a numeric port selector is also accepted for every service.
+// Host is server-side routing metadata and is not sent in SERVICE_LIST frames.
 type Service struct {
 	Name string
+	Host string
 	Port int
 }
 

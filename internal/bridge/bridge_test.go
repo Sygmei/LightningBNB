@@ -220,6 +220,42 @@ func TestServerForwardsAdvertisedServiceByPort(t *testing.T) {
 	}
 }
 
+func TestServerForwardsServiceToConfiguredHost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	target, _ := startEchoServer(t, ctx)
+	defer target.Close()
+	port := target.Addr().(*net.TCPAddr).Port
+	service := mux.Service{Name: "google", Host: "127.0.0.1", Port: port}
+	clientWire, serverWire := net.Pipe()
+	clientMux := mux.NewClient(clientWire, 1)
+	serverMux := mux.NewServerWithServicesAndCompressionAndTraffic(serverWire, 1, false, nil, []mux.Service{service})
+	defer clientMux.Close()
+	defer serverMux.Close()
+	go func() {
+		_ = ServeServerWithServicesWithTraffic(ctx, serverMux, "127.0.0.2", []mux.Service{service}, time.Second, nil, nil)
+	}()
+
+	stream, err := clientMux.OpenService(ctx, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Write([]byte("non-local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "non-local" {
+		t.Fatalf("echo = %q", got)
+	}
+}
+
 func TestServerForwardsToIPv6Target(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

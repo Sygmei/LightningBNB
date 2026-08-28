@@ -136,7 +136,7 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		preventSleep := flags.Bool("prevent-sleep", false, "prevent automatic system sleep while the server is running")
 		serverIDFile := flags.String("server-id-file", "", "persistent server ID file; defaults to the user configuration directory")
 		var serviceValues stringListFlag
-		flags.Var(&serviceValues, "service", "service-name:server-port; may be repeated")
+		flags.Var(&serviceValues, "service", "service-name:server-port or service-name:host:port; may be repeated")
 		if err := flags.Parse(args[1:]); err != nil {
 			return flagError(err)
 		}
@@ -305,7 +305,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, `Usage:
   lightningbnb scan [--timeout 10s] [--all]
   lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--service LOCAL_PORT:SERVICE] [--device ID] [--compression]
-  lightningbnb server (--target-port PORT | --service NAME:PORT ...) [--compression] [--prevent-sleep]
+  lightningbnb server (--target-port PORT | --service NAME:PORT or NAME:HOST:PORT ...) [--compression] [--prevent-sleep]
   lightningbnb services --device ID
   lightningbnb benchmark [--device ID] [--duration 30s] [--compression]
   lightningbnb version`)

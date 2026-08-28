@@ -9,12 +9,18 @@ import (
 )
 
 func TestParseServerServices(t *testing.T) {
-	services, err := ParseServerServices([]string{"http:1180", "https:11443"})
+	services, err := ParseServerServices([]string{"http:1180", "google:google.com:443", "https:[::1]:11443"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(services) != 2 || services[0].Name != "http" || services[0].Port != 1180 {
+	if len(services) != 3 || services[0].Name != "http" || services[0].Host != "" || services[0].Port != 1180 {
 		t.Fatalf("services = %+v", services)
+	}
+	if services[1].Name != "google" || services[1].Host != "google.com" || services[1].Port != 443 {
+		t.Fatalf("non-local service = %+v", services[1])
+	}
+	if services[2].Name != "https" || services[2].Host != "::1" || services[2].Port != 11443 {
+		t.Fatalf("IPv6 service = %+v", services[2])
 	}
 }
 
@@ -22,6 +28,14 @@ func TestParseServerServicesRejectsNumericAliasAndDuplicate(t *testing.T) {
 	for _, values := range [][]string{{"1180:1180"}, {"http:1180", "http:11443"}} {
 		if _, err := ParseServerServices(values); err == nil {
 			t.Fatalf("ParseServerServices(%q) succeeded", values)
+		}
+	}
+}
+
+func TestParseServerServicesRejectsMalformedTarget(t *testing.T) {
+	for _, value := range []string{"google:google.com", "google:google.com:not-a-port", "google:::443"} {
+		if _, err := ParseServerServices([]string{value}); err == nil {
+			t.Fatalf("ParseServerServices(%q) succeeded", value)
 		}
 	}
 }

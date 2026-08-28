@@ -57,11 +57,14 @@ docker run --rm --network host \
 Pair the two computers with the operating-system Bluetooth tools first, then start the server on the computer that can reach the target.
 
 ```sh
-# Forward every bridged stream to localhost:8080 on the server (legacy form).
+# Forward every bridged stream to localhost:8080 on the server.
 ./lightningbnb server --target-port 8080
 
 # Advertise several server-side TCP services.
 ./lightningbnb server --service http:1180 --service https:11443
+
+# A service may target any host reachable from the server computer.
+./lightningbnb server --service google:google.com:443
 
 # Find the server from the client computer.
 ./lightningbnb scan --timeout 30s
@@ -130,7 +133,7 @@ With `--service`, the client prints one `LISTEN_ADDR[service]=...` line per loca
 
 `--all-services` discovers the server's `SERVICE_LIST` after connecting, then
 listens on each advertised port locally. Named services are selected by alias;
-unnamed legacy services are selected by their advertised numeric port. It
+unnamed services are selected by their advertised numeric port. It
 cannot be combined with `--service` or an explicit `--listen-port`.
 
 ### Server flags
@@ -148,8 +151,14 @@ cannot be combined with `--service` or an explicit `--listen-port`.
 --prevent-sleep     prevent automatic system sleep while the server is running
 --server-id-file    persistent server ID file (default: OS user configuration directory)
 --transport-debug   log reliable-link packet, ACK, retransmission, and send-latency diagnostics
---service           service-name:server-port; repeat to advertise multiple targets
+--service           service-name:server-port or service-name:host:port; repeat to advertise multiple targets
 ```
+
+`NAME:PORT` is the local-target form and forwards to `--target-host` (which
+defaults to `localhost`). `NAME:HOST:PORT` overrides the host for that service,
+so the server can forward to a non-local target such as
+`google:google.com:443`. The host is resolved and contacted by the server;
+clients only see the service name and port.
 
 `--prevent-sleep` keeps the system awake for the lifetime of the server process without forcing the display to remain on. The native inhibitor is released on clean shutdown. On Windows, explicit user actions such as selecting Sleep or closing a laptop lid can still suspend the computer.
 

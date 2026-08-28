@@ -28,7 +28,11 @@ func ServeServerWithServicesWithTraffic(ctx context.Context, session *mux.Sessio
 	return serveServer(ctx, session, dialTimeout, logf, counter, func(selector string) (string, bool) {
 		for _, service := range services {
 			if selector == service.Name || (selector == "" && service.Name == "") || selector == strconv.Itoa(service.Port) {
-				return net.JoinHostPort(host, strconv.Itoa(service.Port)), true
+				targetHost := host
+				if service.Host != "" {
+					targetHost = service.Host
+				}
+				return net.JoinHostPort(targetHost, strconv.Itoa(service.Port)), true
 			}
 		}
 		return "", false
