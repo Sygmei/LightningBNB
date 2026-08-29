@@ -158,7 +158,8 @@ cannot be combined with `--service` or an explicit `--listen-port`.
 defaults to `localhost`). `NAME:HOST:PORT` overrides the host for that service,
 so the server can forward to a non-local target such as
 `google:google.com:443`. The host is resolved and contacted by the server;
-clients only see the service name and port.
+clients see the service name and advertised target, including the host for
+remote targets.
 
 `--prevent-sleep` keeps the system awake for the lifetime of the server process without forcing the display to remain on. The native inhibitor is released on clean shutdown. On Windows, explicit user actions such as selecting Sleep or closing a laptop lid can still suspend the computer.
 

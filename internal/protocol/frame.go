@@ -8,7 +8,7 @@ import (
 )
 
 // Version is the on-wire LightningBNB protocol version.
-const Version uint8 = 2
+const Version uint8 = 3
 
 const (
 	HeaderSize      = 9

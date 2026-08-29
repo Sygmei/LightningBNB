@@ -51,7 +51,9 @@ type Session struct {
 
 // Service is a TCP target advertised by the server. Name is the selector
 // used by clients; a numeric port selector is also accepted for every service.
-// Host is server-side routing metadata and is not sent in SERVICE_LIST frames.
+// Host is the target host for this service. An empty host uses the server's
+// configured default target host. Hosts are included in SERVICE_LIST so
+// clients can distinguish local-target and remote-target services.
 type Service struct {
 	Name string
 	Host string
@@ -347,7 +349,7 @@ func (s *Session) handleOpen(frame protocol.Frame) error {
 func encodeServices(services []Service) []byte {
 	length := 2
 	for _, service := range services {
-		length += 1 + len(service.Name) + 2
+		length += 1 + len(service.Name) + 2 + len(service.Host) + 2
 	}
 	payload := make([]byte, length)
 	binary.BigEndian.PutUint16(payload[:2], uint16(len(services)))
@@ -357,6 +359,10 @@ func encodeServices(services []Service) []byte {
 		offset++
 		copy(payload[offset:], service.Name)
 		offset += len(service.Name)
+		binary.BigEndian.PutUint16(payload[offset:offset+2], uint16(len(service.Host)))
+		offset += 2
+		copy(payload[offset:], service.Host)
+		offset += len(service.Host)
 		binary.BigEndian.PutUint16(payload[offset:offset+2], uint16(service.Port))
 		offset += 2
 	}
@@ -381,12 +387,22 @@ func decodeServices(payload []byte) ([]Service, error) {
 		}
 		name := string(payload[offset : offset+nameLength])
 		offset += nameLength
+		if offset+2 > len(payload) {
+			return nil, fmt.Errorf("%w: truncated service host", ErrProtocol)
+		}
+		hostLength := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
+		offset += 2
+		if offset+hostLength+2 > len(payload) {
+			return nil, fmt.Errorf("%w: invalid service host", ErrProtocol)
+		}
+		host := string(payload[offset : offset+hostLength])
+		offset += hostLength
 		port := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
 		offset += 2
 		if port < 1 || port > 65535 {
 			return nil, fmt.Errorf("%w: invalid service port", ErrProtocol)
 		}
-		services = append(services, Service{Name: name, Port: port})
+		services = append(services, Service{Name: name, Host: host, Port: port})
 	}
 	if offset != len(payload) {
 		return nil, fmt.Errorf("%w: trailing service list data", ErrProtocol)

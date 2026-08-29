@@ -107,6 +107,22 @@ func TestRenderPickerShowsExposedServicesForSelectedServer(t *testing.T) {
 	}
 }
 
+func TestRenderPickerShowsRemoteExposedServiceTarget(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	services := map[string]pickerServicesState{
+		"platform-a": {
+			services: []mux.Service{{Name: "google", Host: "google.com", Port: 443}},
+		},
+	}
+
+	view := renderPickerViewWithServices(&bytes.Buffer{}, []string{"platform-a"}, map[string]ble.Device{
+		"platform-a": {ID: "platform-a", Name: "Living room"},
+	}, 0, false, 0, "", services)
+	if !strings.Contains(view, "google         → google.com:443") {
+		t.Fatalf("picker view does not identify remote service target:\n%s", view)
+	}
+}
+
 func TestRenderPickerKeepsPanelBordersAligned(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	devices := map[string]ble.Device{

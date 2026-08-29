@@ -9,7 +9,7 @@ import (
 
 func TestServiceListAndSelectorRoundTrip(t *testing.T) {
 	clientWire, serverWire := net.Pipe()
-	services := []Service{{Name: "http", Port: 1180}, {Name: "https", Port: 11443}}
+	services := []Service{{Name: "http", Port: 1180}, {Name: "google", Host: "google.com", Port: 443}, {Name: "https", Port: 11443}}
 	client := NewClient(clientWire, 4)
 	server := NewServerWithServicesAndCompressionAndTraffic(serverWire, 4, false, nil, services)
 	defer client.Close()

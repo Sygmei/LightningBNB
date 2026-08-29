@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,13 +94,17 @@ func ListServices(ctx context.Context, cfg ServicesConfig) error {
 	if err != nil {
 		return fmt.Errorf("read services: %w", err)
 	}
-	_, _ = fmt.Fprintf(cfg.Output, "SERVER_ID=%s\nNAME\tPORT\n", deviceID)
+	_, _ = fmt.Fprintf(cfg.Output, "SERVER_ID=%s\nNAME\tTARGET\n", deviceID)
 	for _, service := range services {
 		name := service.Name
 		if name == "" {
 			name = "(default)"
 		}
-		_, _ = fmt.Fprintf(cfg.Output, "%s\t%d\n", name, service.Port)
+		target := strconv.Itoa(service.Port)
+		if service.Host != "" {
+			target = net.JoinHostPort(service.Host, target)
+		}
+		_, _ = fmt.Fprintf(cfg.Output, "%s\t%s\n", name, target)
 	}
 	return nil
 }

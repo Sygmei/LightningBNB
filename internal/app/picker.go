@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -535,7 +537,11 @@ func renderPickerServicesContent(styles pickerStyles, orderedIDs []string, devic
 		if index > 0 {
 			panel.WriteString("\n")
 		}
-		panel.WriteString(styles.render(styles.body, fmt.Sprintf("%-14s :%d", name, service.Port)))
+		if service.Host == "" {
+			panel.WriteString(styles.render(styles.body, fmt.Sprintf("%-14s :%d", name, service.Port)))
+			continue
+		}
+		panel.WriteString(styles.render(styles.body, fmt.Sprintf("%-14s → %s", name, net.JoinHostPort(service.Host, strconv.Itoa(service.Port)))))
 	}
 	return panel.String()
 }
