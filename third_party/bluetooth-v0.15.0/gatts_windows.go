@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
 	"github.com/saltosystems/winrt-go"
+	winrtbluetooth "github.com/saltosystems/winrt-go/windows/devices/bluetooth"
 	"github.com/saltosystems/winrt-go/windows/devices/bluetooth/genericattributeprofile"
 	"github.com/saltosystems/winrt-go/windows/foundation"
 	"github.com/saltosystems/winrt-go/windows/foundation/collections"
@@ -42,12 +44,37 @@ func (a *Adapter) AddService(s *Service) error {
 	if err != nil {
 		return err
 	}
+	if res == nil {
+		return fmt.Errorf("create GATT service provider returned no result")
+	}
 
 	serviceProviderResult := (*genericattributeprofile.GattServiceProviderResult)(res)
+	resultError, err := serviceProviderResult.GetError()
+	if err != nil {
+		return fmt.Errorf("get GATT service provider result: %w", err)
+	}
+	if resultError != winrtbluetooth.BluetoothErrorSuccess {
+		return fmt.Errorf("create GATT service provider failed with Bluetooth error %d", resultError)
+	}
+
 	serviceProvider, err := serviceProviderResult.GetServiceProvider()
 	if err != nil {
 		return err
 	}
+	if serviceProvider == nil {
+		return fmt.Errorf("create GATT service provider returned no provider")
+	}
+	advertisingStarted := false
+	providerStored := false
+	defer func() {
+		if !providerStored {
+			if advertisingStarted {
+				_ = serviceProvider.StopAdvertising()
+				_ = waitForAdvertisementStatus(serviceProvider, false)
+			}
+			serviceProvider.Release()
+		}
+	}()
 
 	localService, err := serviceProvider.GetService()
 	if err != nil {
@@ -224,21 +251,12 @@ func (a *Adapter) AddService(s *Service) error {
 		}
 	}
 
-	params, err := genericattributeprofile.NewGattServiceProviderAdvertisingParameters()
-	if err != nil {
+	if err := startServiceAdvertisement(serviceProvider); err != nil {
 		return err
 	}
-
-	if err = params.SetIsConnectable(true); err != nil {
-		return err
-	}
-
-	if err = params.SetIsDiscoverable(true); err != nil {
-		return err
-	}
-
-	if err := serviceProvider.StartAdvertisingWithParameters(params); err != nil {
-		return err
+	advertisingStarted = true
+	if statusErr := waitForAdvertisementStatus(serviceProvider, true); statusErr != nil {
+		return statusErr
 	}
 	a.serviceProvidersMu.Lock()
 	if a.serviceProviders == nil {
@@ -247,10 +265,120 @@ func (a *Adapter) AddService(s *Service) error {
 	serviceUUID := syscallUUIDFromUUID(s.UUID)
 	if previous := a.serviceProviders[serviceUUID]; previous != nil {
 		_ = previous.StopAdvertising()
+		_ = waitForAdvertisementStatus(previous, false)
 		previous.Release()
 	}
 	a.serviceProviders[serviceUUID] = serviceProvider
+	providerStored = true
 	a.serviceProvidersMu.Unlock()
+	return nil
+}
+
+const advertisementStatusTimeout = 5 * time.Second
+
+func waitForAdvertisementStatus(provider *genericattributeprofile.GattServiceProvider, started bool) error {
+	deadline := time.Now().Add(advertisementStatusTimeout)
+	var lastStatus genericattributeprofile.GattServiceProviderAdvertisementStatus
+	for {
+		status, err := provider.GetAdvertisementStatus()
+		if err != nil {
+			return fmt.Errorf("read GATT advertisement status: %w", err)
+		}
+		lastStatus = status
+		if started {
+			if status == genericattributeprofile.GattServiceProviderAdvertisementStatusStarted ||
+				status == genericattributeprofile.GattServiceProviderAdvertisementStatusStartedWithoutAllAdvertisementData {
+				return nil
+			}
+			// WinRT can retain Aborted from a previous advertising operation while
+			// StartAdvertising is still being processed. On real hardware the
+			// observed sequence can be Aborted -> Started within a few polling
+			// intervals, so Aborted is only terminal once the startup deadline
+			// expires.
+		} else if status == genericattributeprofile.GattServiceProviderAdvertisementStatusStopped {
+			return nil
+		} else if status == genericattributeprofile.GattServiceProviderAdvertisementStatusAborted {
+			// Aborted is terminal for the current advertising operation. Waiting
+			// for Stopped here can add another five seconds even though the
+			// provider is already unusable for that operation.
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if started && lastStatus == genericattributeprofile.GattServiceProviderAdvertisementStatusAborted {
+				return fmt.Errorf("%w for %s (status=%s/%d; Windows rejected the request, commonly due to radio resource contention or a driver limitation)", ErrAdvertisementAborted, advertisementStatusTimeout, advertisementStatusName(lastStatus), lastStatus)
+			}
+			return fmt.Errorf("timed out waiting for GATT advertisement status %s (%d)", advertisementStatusName(lastStatus), lastStatus)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func advertisementStatusName(status genericattributeprofile.GattServiceProviderAdvertisementStatus) string {
+	switch status {
+	case genericattributeprofile.GattServiceProviderAdvertisementStatusCreated:
+		return "created"
+	case genericattributeprofile.GattServiceProviderAdvertisementStatusStopped:
+		return "stopped"
+	case genericattributeprofile.GattServiceProviderAdvertisementStatusStarted:
+		return "started"
+	case genericattributeprofile.GattServiceProviderAdvertisementStatusAborted:
+		return "aborted"
+	case genericattributeprofile.GattServiceProviderAdvertisementStatusStartedWithoutAllAdvertisementData:
+		return "started-without-all-advertisement-data"
+	default:
+		return fmt.Sprintf("unknown(%d)", status)
+	}
+}
+
+func startServiceAdvertisement(provider *genericattributeprofile.GattServiceProvider) error {
+	params, err := genericattributeprofile.NewGattServiceProviderAdvertisingParameters()
+	if err != nil {
+		return fmt.Errorf("create GATT advertisement parameters: %w", err)
+	}
+	defer params.Release()
+	if err = params.SetIsConnectable(true); err != nil {
+		return fmt.Errorf("configure GATT advertisement connectability: %w", err)
+	}
+	if err = params.SetIsDiscoverable(true); err != nil {
+		return fmt.Errorf("configure GATT advertisement discoverability: %w", err)
+	}
+	if err = provider.StartAdvertisingWithParameters(params); err != nil {
+		return fmt.Errorf("start GATT service advertisement: %w", err)
+	}
+	return nil
+}
+
+// RestartServiceAdvertisement rebinds the connectable GATT advertisement.
+// WinRT can stop advertising after a central disconnects, while the service
+// provider itself remains registered.
+func (a *Adapter) RestartServiceAdvertisement(s *Service) error {
+	serviceUUID := syscallUUIDFromUUID(s.UUID)
+	a.serviceProvidersMu.Lock()
+	serviceProvider := a.serviceProviders[serviceUUID]
+	a.serviceProvidersMu.Unlock()
+	if serviceProvider == nil {
+		return fmt.Errorf("GATT service provider for %s is not registered", s.UUID)
+	}
+
+	status, err := serviceProvider.GetAdvertisementStatus()
+	if err != nil {
+		return fmt.Errorf("read GATT advertisement status before restart: %w", err)
+	}
+	if status != genericattributeprofile.GattServiceProviderAdvertisementStatusStopped &&
+		status != genericattributeprofile.GattServiceProviderAdvertisementStatusCreated {
+		if err := serviceProvider.StopAdvertising(); err != nil {
+			return fmt.Errorf("stop GATT service advertisement from %s: %w", advertisementStatusName(status), err)
+		}
+		if err := waitForAdvertisementStatus(serviceProvider, false); err != nil {
+			return err
+		}
+	}
+	if err := startServiceAdvertisement(serviceProvider); err != nil {
+		return fmt.Errorf("restart GATT service advertisement: %w", err)
+	}
+	if err := waitForAdvertisementStatus(serviceProvider, true); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -265,6 +393,9 @@ func (a *Adapter) RemoveService(s *Service) error {
 		return nil
 	}
 	err := serviceProvider.StopAdvertising()
+	if err == nil {
+		err = waitForAdvertisementStatus(serviceProvider, false)
+	}
 	serviceProvider.Release()
 	return err
 }

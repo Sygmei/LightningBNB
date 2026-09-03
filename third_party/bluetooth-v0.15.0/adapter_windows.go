@@ -39,7 +39,28 @@ var DefaultAdapter = &Adapter{
 // Enable configures the BLE stack. It must be called before any
 // Bluetooth-related calls (unless otherwise indicated).
 func (a *Adapter) Enable() error {
-	return ole.RoInitialize(1) // initialize with multithreading enabled
+	err := ole.RoInitialize(1) // initialize with multithreading enabled
+	if err != nil {
+		// RoInitialize returns S_FALSE (HRESULT 1) when the current thread was
+		// already initialized for the requested apartment. S_FALSE is a
+		// successful result, but go-ole exposes every non-zero HRESULT as an
+		// error.
+		var oleErr *ole.OleError
+		if !errors.As(err, &oleErr) || oleErr.Code() != 1 {
+			if errors.As(err, &oleErr) {
+				return fmt.Errorf("initialize Windows Runtime (HRESULT 0x%08X): %w", uint32(oleErr.Code()), err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// CheckPeripheralRole verifies the capability required by a Windows GATT
+// server. It is intentionally separate from Enable because clients and
+// scanners do not need peripheral-role support.
+func (a *Adapter) CheckPeripheralRole() error {
+	return checkWindowsBluetoothPeripheralRole()
 }
 
 func awaitAsyncOperation(asyncOperation *foundation.IAsyncOperation, genericParamSignature string) error {

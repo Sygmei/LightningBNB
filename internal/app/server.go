@@ -7,7 +7,6 @@ import (
 	"net"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Sygmei/LightningBNB/internal/ble"
@@ -18,21 +17,23 @@ import (
 )
 
 type ServerConfig struct {
-	TargetHost     string
-	TargetPort     int
-	Services       []mux.Service
-	Name           string
-	DialTimeout    time.Duration
-	ResumeTimeout  time.Duration
-	MaxConnections int
-	StatsInterval  time.Duration
-	StatsTUI       bool
-	Benchmark      bool
-	Compression    bool
-	TransportDebug bool
-	PreventSleep   bool
-	ServerIDFile   string
-	ErrorOutput    io.Writer
+	TargetHost         string
+	TargetPort         int
+	Services           []mux.Service
+	Name               string
+	DialTimeout        time.Duration
+	ResumeTimeout      time.Duration
+	MaxConnections     int
+	StatsInterval      time.Duration
+	StatsTUI           bool
+	Benchmark          bool
+	Compression        bool
+	TransportDebug     bool
+	PreventSleep       bool
+	SkipBLEChecks      bool
+	DisableBLERecovery bool
+	ServerIDFile       string
+	ErrorOutput        io.Writer
 }
 
 func RunServer(ctx context.Context, cfg ServerConfig) error {
@@ -58,11 +59,15 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	listener, err := startBLEServer(ctx, cfg.Name, serverID, func(format string, args ...any) { logger.Printf(format, args...) })
+	listener, err := startBLEServer(ctx, cfg.Name, serverID, cfg.SkipBLEChecks, cfg.DisableBLERecovery, func(format string, args ...any) { logger.Printf(format, args...) })
 	if err != nil {
 		return fmt.Errorf("start Bluetooth server: %w", err)
 	}
-	defer listener.Close()
+	defer func() {
+		if closeErr := listener.Close(); closeErr != nil {
+			logger.Printf("BLE: server cleanup failed: %v", closeErr)
+		}
+	}()
 	logger.Printf("stable server ID %s (stored in %s)", serverID, serverIDPath)
 	if cfg.PreventSleep {
 		inhibitor, err := acquireSleepInhibitor(ctx)
@@ -212,23 +217,54 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 	}
 }
 
-func startBLEServer(ctx context.Context, name string, serverID ble.ServerID, logf func(string, ...any)) (ble.PeripheralListener, error) {
+func startBLEServer(ctx context.Context, name string, serverID ble.ServerID, skipBLEChecks, disableBLERecovery bool, logf func(string, ...any)) (ble.PeripheralListener, error) {
 	const attempts = 4
 	var err error
+	radioRecoveryAttempted := false
+	serviceRecoveryAttempted := false
 	for attempt := 1; attempt <= attempts; attempt++ {
 		var listener ble.PeripheralListener
-		listener, err = ble.StartServer(ctx, name, serverID)
+		listener, err = ble.StartServerWithOptions(ctx, name, serverID, logf, ble.ServerStartOptions{SkipAdapterChecks: skipBLEChecks})
 		if err == nil {
 			return listener, nil
 		}
+		switch selectBLERecovery(runtime.GOOS, disableBLERecovery, ctx.Err() == nil, ble.IsAdvertisementAborted(err), radioRecoveryAttempted, serviceRecoveryAttempted) {
+		case bleRecoveryRadio:
+			radioRecoveryAttempted = true
+			if logf != nil {
+				logf("BLE: GATT advertisement remained aborted; resetting the Windows Bluetooth radio once")
+			}
+			if recoveryErr := ble.RecoverServerAdapter(); recoveryErr == nil {
+				if logf != nil {
+					logf("BLE: Windows Bluetooth radio reset completed; retrying GATT registration")
+				}
+				continue
+			} else if logf != nil {
+				logf("BLE: automatic Windows Bluetooth radio recovery failed: %v", recoveryErr)
+			}
+		case bleRecoveryServices:
+			serviceRecoveryAttempted = true
+			if logf != nil {
+				logf("BLE: radio reset did not clear the GATT lock; requesting administrator permission to restart Windows Bluetooth services")
+			}
+			if recoveryErr := recoverBluetoothServicesElevated(ctx); recoveryErr == nil {
+				if logf != nil {
+					logf("BLE: Windows Bluetooth services restarted; retrying GATT registration")
+				}
+				continue
+			} else if logf != nil {
+				logf("BLE: automatic Windows Bluetooth service recovery failed: %v", recoveryErr)
+			}
+		}
 		if runtime.GOOS != "windows" || attempt == attempts || ctx.Err() != nil {
+			if logf != nil {
+				logf("Bluetooth server startup attempt %d/%d failed permanently: %v", attempt, attempts, err)
+			}
 			break
 		}
-		// Windows can leave the WinRT GATT publisher in an asynchronous
-		// stopping state for a short period after process shutdown.
-		if !strings.Contains(err.Error(), "HRESULT") && !strings.Contains(err.Error(), "async operation") {
-			break
-		}
+		// Windows can leave the WinRT GATT provider or its radio reservation in
+		// a transient state after process shutdown. Retry every native startup
+		// failure now that failed providers are cleaned up by the backend.
 		delay := time.Duration(1<<(attempt-1)) * time.Second
 		if logf != nil {
 			logf("Bluetooth server startup attempt %d/%d failed: %v; retrying in %s", attempt, attempts, err, delay)
@@ -242,4 +278,25 @@ func startBLEServer(ctx context.Context, name string, serverID ble.ServerID, log
 		}
 	}
 	return nil, err
+}
+
+type bleRecoveryAction uint8
+
+const (
+	bleRecoveryNone bleRecoveryAction = iota
+	bleRecoveryRadio
+	bleRecoveryServices
+)
+
+func selectBLERecovery(goos string, disabled, contextActive, advertisementAborted, radioAttempted, servicesAttempted bool) bleRecoveryAction {
+	if goos != "windows" || disabled || !contextActive || !advertisementAborted {
+		return bleRecoveryNone
+	}
+	if !radioAttempted {
+		return bleRecoveryRadio
+	}
+	if !servicesAttempted {
+		return bleRecoveryServices
+	}
+	return bleRecoveryNone
 }

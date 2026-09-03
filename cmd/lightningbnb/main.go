@@ -134,6 +134,8 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 		compression := flags.Bool("compression", false, "allow clients to use compressed multiplexed TCP payloads")
 		transportDebug := flags.Bool("transport-debug", false, "log reliable-link packet and latency diagnostics")
 		preventSleep := flags.Bool("prevent-sleep", false, "prevent automatic system sleep while the server is running")
+		skipBLEChecks := flags.Bool("skip-ble-checks", false, "skip native BLE adapter capability checks")
+		noBLERecovery := flags.Bool("no-ble-recovery", false, "disable automatic Windows Bluetooth radio and service recovery")
 		serverIDFile := flags.String("server-id-file", "", "persistent server ID file; defaults to the user configuration directory")
 		var serviceValues stringListFlag
 		flags.Var(&serviceValues, "service", "service-name:server-port or service-name:host:port; may be repeated")
@@ -172,21 +174,23 @@ func run(ctx context.Context, args []string, input io.Reader, output, errorOutpu
 			return err
 		}
 		return app.RunServer(ctx, app.ServerConfig{
-			TargetHost:     *targetHost,
-			TargetPort:     *targetPort,
-			Services:       services,
-			Name:           *name,
-			DialTimeout:    *dialTimeout,
-			ResumeTimeout:  *resumeTimeout,
-			MaxConnections: *maxConnections,
-			StatsInterval:  *statsInterval,
-			StatsTUI:       isTerminalWriter(errorOutput),
-			Benchmark:      *benchmark,
-			Compression:    *compression,
-			TransportDebug: *transportDebug,
-			PreventSleep:   *preventSleep,
-			ServerIDFile:   *serverIDFile,
-			ErrorOutput:    errorOutput,
+			TargetHost:         *targetHost,
+			TargetPort:         *targetPort,
+			Services:           services,
+			Name:               *name,
+			DialTimeout:        *dialTimeout,
+			ResumeTimeout:      *resumeTimeout,
+			MaxConnections:     *maxConnections,
+			StatsInterval:      *statsInterval,
+			StatsTUI:           isTerminalWriter(errorOutput),
+			Benchmark:          *benchmark,
+			Compression:        *compression,
+			TransportDebug:     *transportDebug,
+			PreventSleep:       *preventSleep,
+			SkipBLEChecks:      *skipBLEChecks,
+			DisableBLERecovery: *noBLERecovery,
+			ServerIDFile:       *serverIDFile,
+			ErrorOutput:        errorOutput,
 		})
 
 	case "services":
@@ -305,7 +309,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, `Usage:
   lightningbnb scan [--timeout 10s] [--all]
   lightningbnb client [--listen-host 127.0.0.1] [--listen-port 0] [--service LOCAL_PORT:SERVICE] [--device ID] [--compression]
-  lightningbnb server (--target-port PORT | --service NAME:PORT or NAME:HOST:PORT ...) [--compression] [--prevent-sleep]
+  lightningbnb server (--target-port PORT | --service NAME:PORT or NAME:HOST:PORT ...) [--compression] [--prevent-sleep] [--skip-ble-checks] [--no-ble-recovery]
   lightningbnb services --device ID
   lightningbnb benchmark [--device ID] [--duration 30s] [--compression]
   lightningbnb version`)

@@ -1,10 +1,21 @@
 package ble
 
 import (
+	"fmt"
 	"testing"
 
 	"tinygo.org/x/bluetooth"
 )
+
+func TestAdvertisementAbortedErrorCanBeIdentifiedThroughWrapping(t *testing.T) {
+	err := fmt.Errorf("start service: %w", bluetooth.ErrAdvertisementAborted)
+	if !IsAdvertisementAborted(err) {
+		t.Fatal("wrapped advertisement-aborted error was not identified")
+	}
+	if IsAdvertisementAborted(fmt.Errorf("different failure")) {
+		t.Fatal("unrelated error was identified as advertisement-aborted")
+	}
+}
 
 func TestTransportServiceRegistersBothCharacteristicHandles(t *testing.T) {
 	var rx bluetooth.Characteristic

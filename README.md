@@ -149,6 +149,8 @@ cannot be combined with `--service` or an explicit `--listen-port`.
 --benchmark         handle in-memory throughput streams instead of a TCP target
 --compression       allow clients to negotiate compressed TCP payloads
 --prevent-sleep     prevent automatic system sleep while the server is running
+--skip-ble-checks   skip native BLE adapter capability checks
+--no-ble-recovery   disable automatic Windows Bluetooth radio and service recovery
 --server-id-file    persistent server ID file (default: OS user configuration directory)
 --transport-debug   log reliable-link packet, ACK, retransmission, and send-latency diagnostics
 --service           service-name:server-port or service-name:host:port; repeat to advertise multiple targets
@@ -162,6 +164,16 @@ clients see the service name and advertised target, including the host for
 remote targets.
 
 `--prevent-sleep` keeps the system awake for the lifetime of the server process without forcing the display to remain on. The native inhibitor is released on clean shutdown. On Windows, explicit user actions such as selecting Sleep or closing a laptop lid can still suspend the computer.
+
+`--skip-ble-checks` bypasses the Windows adapter capability preflight only. It
+does not force advertising when Windows rejects the actual GATT advertisement;
+leave it off unless diagnosing a capability-query failure.
+
+On Windows, a GATT advertisement that remains aborted first triggers one
+automatic Bluetooth radio off/on cycle. If the next attempt is still aborted,
+LightningBNB requests administrator permission once and restarts the Windows
+Bluetooth services that own the stale GATT reservation. Both operations briefly
+disconnect other Bluetooth devices. Use `--no-ble-recovery` to disable them.
 
 On its first start, the server generates an application-level ID such as `lbnb:6ea4c3db-41bd-4ebf-9712-a8c01ddba387` and stores it in the OS user configuration directory. `scan` reports this stable ID alongside the transient platform Bluetooth ID, and `client --device` accepts either form. Prefer saving the `lbnb:` ID: the client resolves it to the current Bluetooth address after server or Bluetooth restarts. Use `--server-id-file` when running the server under another account or when its configuration must live at a fixed path.
 
@@ -245,6 +257,7 @@ One server accepts one BLE client at a time. That client may carry up to 32 TCP 
 
 - No scan results: confirm Bluetooth is enabled, the server is advertising, and the adapter supports BLE. Windows uses the connectable GATT service advertisement directly and may show the server as `(unnamed)` because WinRT does not let this application attach a local name to that advertisement.
 - Advertisement diagnosis: run `lightningbnb scan --timeout 15s --all` to list unfiltered BLE advertisements, service UUIDs, service data, and manufacturer data. A Windows LightningBNB server should include `13f0b6a0-4746-4c42-8e2f-1f62e4a0b1a0` in `SERVICE_UUIDS`. Interactive client discovery prints each recognized server as soon as it arrives.
+- Windows reports that GATT advertising remained aborted: close other Bluetooth peripheral/advertising applications and retry. LightningBNB waits through WinRT's transient `Aborted` state and retries genuine startup failures automatically; `--skip-ble-checks` does not bypass this native failure.
 - Linux permission errors: verify BlueZ is running and that the account can use `org.bluez` through the system D-Bus. Distribution policies vary.
 - macOS abort or permission errors: grant Bluetooth access to the terminal application, then restart it.
 - Server reports unsupported mode on macOS: this is intentional in v1; run the server on Windows or Linux.

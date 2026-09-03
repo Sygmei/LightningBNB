@@ -22,56 +22,103 @@ type peripheralServer struct {
 	tx            bluetooth.Characteristic
 	identity      bluetooth.Characteristic
 
-	connections             chan link.PacketConn
-	done                    chan struct{}
-	once                    sync.Once
-	mu                      sync.Mutex
-	current                 *serverPacketConn
-	advertisementMu         sync.Mutex
-	restartingAdvertisement bool
+	connections                 chan link.PacketConn
+	done                        chan struct{}
+	once                        sync.Once
+	mu                          sync.Mutex
+	current                     *serverPacketConn
+	advertisementMu             sync.Mutex
+	restartingAdvertisement     bool
+	restartServiceAdvertisement func() error
+	logf                        func(string, ...any)
 }
 
 func StartServer(ctx context.Context, name string, serverID ServerID) (PeripheralListener, error) {
+	return StartServerWithOptions(ctx, name, serverID, nil, ServerStartOptions{})
+}
+
+// StartServerWithLogger starts the local GATT server and reports native
+// advertising lifecycle events through logf. The callback is optional.
+func StartServerWithLogger(ctx context.Context, name string, serverID ServerID, logf func(string, ...any)) (PeripheralListener, error) {
+	return StartServerWithOptions(ctx, name, serverID, logf, ServerStartOptions{})
+}
+
+// StartServerWithOptions starts the local GATT server with optional native
+// adapter checks.
+func StartServerWithOptions(ctx context.Context, name string, serverID ServerID, logf func(string, ...any), options ServerStartOptions) (PeripheralListener, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	adapter := bluetooth.DefaultAdapter
+	logf("BLE: enabling adapter")
 	if err := adapter.Enable(); err != nil {
 		return nil, err
+	}
+	if options.SkipAdapterChecks {
+		logf("BLE: adapter initialized; skipping BLE peripheral-role capability check")
+	} else {
+		if err := checkServerAdapter(adapter); err != nil {
+			return nil, err
+		}
+		logf("BLE: adapter initialized; BLE peripheral-role capability check passed")
 	}
 	server := &peripheralServer{
 		adapter:     adapter,
 		connections: make(chan link.PacketConn, 1),
 		done:        make(chan struct{}),
+		logf:        logf,
 	}
-	adapter.SetConnectHandler(func(_ bluetooth.Device, connected bool) {
-		if !connected {
-			server.closeCurrent()
-			if runtime.GOOS == "windows" {
-				server.scheduleAdvertisementRestart()
-			}
+	adapter.SetConnectHandler(func(device bluetooth.Device, connected bool) {
+		if connected {
+			logf("BLE: central connected (%s)", device.Address.String())
+			return
+		}
+		logf("BLE: central disconnected (%s)", device.Address.String())
+		server.closeCurrent()
+		if runtime.GOOS == "windows" {
+			server.scheduleAdvertisementRestart()
 		}
 	})
+	logf("BLE: registering GATT service %s with 3 characteristics", ServiceUUIDString)
 	server.service = transportService(&server.rx, &server.tx, &server.identity, serverID, func(_ bluetooth.Connection, _ int, packet []byte) {
 		server.ensureConnection().push(packet)
 	})
 	if err := adapter.AddService(&server.service); err != nil {
+		logf("BLE: GATT service registration/advertising failed: %v", err)
 		return nil, err
 	}
+	server.restartServiceAdvertisement = func() error {
+		return adapter.RestartServiceAdvertisement(&server.service)
+	}
+	logf("BLE: GATT service registered; native advertising setup completed")
 
 	if options, start := genericAdvertisementOptions(runtime.GOOS, name); start {
 		advertisement := adapter.DefaultAdvertisement()
 		if err := advertisement.Configure(options); err != nil {
-			_ = advertisement.Stop()
-			_ = adapter.RemoveService(&server.service)
+			if cleanupErr := advertisement.Stop(); cleanupErr != nil {
+				logf("BLE: generic advertisement cleanup after configure failure: %v", cleanupErr)
+			}
+			if cleanupErr := adapter.RemoveService(&server.service); cleanupErr != nil {
+				logf("BLE: GATT service cleanup after advertisement configure failure: %v", cleanupErr)
+			}
 			return nil, err
 		}
 		if err := advertisement.Start(); err != nil {
 			// WinRT publisher startup is asynchronous. Stop the partially
 			// created publisher before removing the service so a retry does not
 			// inherit an operation that is still being torn down.
-			_ = advertisement.Stop()
-			_ = adapter.RemoveService(&server.service)
+			if cleanupErr := advertisement.Stop(); cleanupErr != nil {
+				logf("BLE: generic advertisement cleanup after start failure: %v", cleanupErr)
+			}
+			if cleanupErr := adapter.RemoveService(&server.service); cleanupErr != nil {
+				logf("BLE: GATT service cleanup after advertisement start failure: %v", cleanupErr)
+			}
 			return nil, err
 		}
 		server.advertisement = advertisement
+		logf("BLE: generic advertisement started as %q", name)
+	} else {
+		logf("BLE: using WinRT connectable GATT advertisement; local name may be omitted")
 	}
 	go func() {
 		<-ctx.Done()
@@ -80,14 +127,14 @@ func StartServer(ctx context.Context, name string, serverID ServerID) (Periphera
 	return server, nil
 }
 
-// scheduleAdvertisementRestart handles Windows/WinRT publishers that stop
+// scheduleAdvertisementRestart handles Windows/WinRT GATT providers that stop
 // advertising after a link disconnect without reporting a fatal process error.
-// The short stop/start gap also gives the OS time to finish the prior async
-// publisher operation before accepting a new connection.
+// The backend waits for the provider's stopped/started status around the
+// restart rather than relying only on a fixed delay.
 func (s *peripheralServer) scheduleAdvertisementRestart() {
 	s.advertisementMu.Lock()
-	advertisement := s.advertisement
-	if advertisement == nil || s.restartingAdvertisement {
+	restart := s.restartServiceAdvertisement
+	if restart == nil || s.restartingAdvertisement {
 		s.advertisementMu.Unlock()
 		return
 	}
@@ -106,14 +153,27 @@ func (s *peripheralServer) scheduleAdvertisementRestart() {
 			return
 		case <-timer.C:
 		}
-		_ = advertisement.Stop()
-		timer.Reset(750 * time.Millisecond)
-		select {
-		case <-s.done:
-			return
-		case <-timer.C:
+		for attempt := 1; attempt <= 3; attempt++ {
+			select {
+			case <-s.done:
+				return
+			default:
+			}
+			if err := restart(); err == nil {
+				s.logf("BLE: native advertisement restart succeeded on attempt %d", attempt)
+				return
+			} else {
+				s.logf("BLE: native advertisement restart attempt %d/3 failed: %v", attempt, err)
+			}
+			if attempt < 3 {
+				timer.Reset(time.Duration(attempt) * time.Second)
+				select {
+				case <-s.done:
+					return
+				case <-timer.C:
+				}
+			}
 		}
-		_ = advertisement.Start()
 	}()
 }
 

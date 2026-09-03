@@ -161,6 +161,11 @@ func (a *Adapter) RemoveService(s *Service) error {
 	return a.adapter.Call("org.bluez.GattManager1.UnregisterApplication", 0, path).Err
 }
 
+// RestartServiceAdvertisement is only needed by the Windows WinRT backend.
+// BlueZ keeps the registered GATT application advertising across central
+// disconnects, so there is nothing to restart here.
+func (a *Adapter) RestartServiceAdvertisement(*Service) error { return nil }
+
 // Write replaces the characteristic value with a new value.
 func (c *Characteristic) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {

@@ -1,5 +1,11 @@
 package bluetooth
 
+import "errors"
+
+// ErrAdvertisementAborted indicates that Windows accepted creation of a local
+// GATT service but did not keep its connectable advertisement running.
+var ErrAdvertisementAborted = errors.New("GATT service advertisement aborted")
+
 // Service is a GATT service to be used in AddService.
 type Service struct {
 	id     uint64

@@ -1,6 +1,18 @@
 package ble
 
-import "tinygo.org/x/bluetooth"
+import (
+	"errors"
+
+	"tinygo.org/x/bluetooth"
+)
+
+type ServerStartOptions struct {
+	SkipAdapterChecks bool
+}
+
+func IsAdvertisementAborted(err error) bool {
+	return errors.Is(err, bluetooth.ErrAdvertisementAborted)
+}
 
 func transportService(rx, tx, identity *bluetooth.Characteristic, serverID ServerID, onWrite bluetooth.WriteEvent) bluetooth.Service {
 	return bluetooth.Service{
