@@ -161,6 +161,7 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 				console.ReportLinkAndBufferFor(linkSession, snapshot, bridgeSnapshot.WaitingConnections, bridgeSnapshot.OpeningConnections, bridgeSnapshot.ActiveConnections, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
 			})
 		}
+		startLinkFailureReporter(ctx, linkSession, logger.Printf)
 		if cfg.TransportDebug {
 			startTransportDebugReporter(ctx, linkSession, logger.Printf)
 		}
@@ -198,17 +199,16 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 			if selectedDevice != nil {
 				device = *selectedDevice
 				selectedDevice = nil
+			} else if lastDevice != nil {
+				// Try the known device once before spending the resume budget on
+				// a full discovery scan. Fall back to discovery if it fails.
+				device = *lastDevice
+				lastDevice = nil
+				logger.Printf("reconnecting to last known platform device %s", device.ID)
 			} else {
 				device, err = adapter.Find(ctx, deviceID, cfg.ScanTimeout)
 				if err != nil {
 					logger.Printf("discover server: %v", err)
-					if lastDevice != nil {
-						cached := *lastDevice
-						lastDevice = nil
-						selectedDevice = &cached
-						logger.Printf("trying last known platform device %s", cached.ID)
-						continue
-					}
 					if !waitContext(ctx, time.Second) {
 						break
 					}

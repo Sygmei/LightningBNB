@@ -22,7 +22,7 @@ type clientPacketConn struct {
 	receive  chan []byte
 	done     chan struct{}
 	once     sync.Once
-	sendMu   sync.Mutex
+	sendMu   packetSendLock
 	withACK  bool
 	onClose  func()
 }

@@ -10,6 +10,16 @@ import (
 
 const transportDebugInterval = time.Second
 
+func startLinkFailureReporter(ctx context.Context, session *link.Session, logf func(string, ...any)) {
+	var reported uint64
+	startLinkHealthReporter(ctx, session, func(snapshot link.TransportSnapshot) {
+		if snapshot.DetachCount > reported {
+			logf("BLE link detached: %s; preserving session for reconnect", snapshot.LastDetachReason)
+			reported = snapshot.DetachCount
+		}
+	})
+}
+
 func startLinkHealthReporter(parent context.Context, session *link.Session, report func(link.TransportSnapshot)) {
 	if session == nil || report == nil {
 		return

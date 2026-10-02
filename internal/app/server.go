@@ -163,12 +163,14 @@ func RunServer(ctx context.Context, cfg ServerConfig) error {
 					console.ReportLinkAndBufferFor(currentLink, snapshot, muxSnapshot.PendingAccepts, muxSnapshot.OpeningStreams, muxSnapshot.Streams, snapshot.OutstandingBytes+snapshot.BufferedRXBytes)
 				})
 			}
+			startLinkFailureReporter(ctx, currentLink, logger.Printf)
 			if cfg.TransportDebug {
 				startTransportDebugReporter(ctx, currentLink, logger.Printf)
 			}
 			muxForBridge := currentMux
 			go func(sessionMux *mux.Session, sessionLink *link.Session) {
 				<-sessionMux.Done()
+				logger.Printf("multiplexed session ended: %v", sessionMux.Err())
 				if sessionLink.IsBound() {
 					_ = sessionLink.Close()
 				}

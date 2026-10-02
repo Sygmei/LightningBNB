@@ -37,6 +37,7 @@ type Session struct {
 	mu      sync.Mutex
 	streams map[uint32]*Stream
 	nextID  uint32
+	lastID  uint32 // highest locally allocated or peer OPEN stream, including rejected opens
 	closed  bool
 	err     error
 
@@ -156,11 +157,16 @@ func (s *Session) OpenService(ctx context.Context, service string) (*Stream, err
 		return nil, ErrTooManyStreams
 	}
 	id := s.nextID
-	s.nextID += 2
 	if id == 0 {
 		s.mu.Unlock()
 		return nil, errors.New("stream id space exhausted")
 	}
+	if id == ^uint32(0) {
+		s.nextID = 0
+	} else {
+		s.nextID += 2
+	}
+	s.lastID = id
 	stream := newStream(s, id)
 	s.streams[id] = stream
 	s.mu.Unlock()
@@ -282,9 +288,13 @@ func (s *Session) handleFrame(frame protocol.Frame) error {
 	}
 	s.mu.Lock()
 	stream := s.streams[frame.StreamID]
+	retired := frame.StreamID%2 == 1 && frame.StreamID <= s.lastID
 	s.mu.Unlock()
 	if stream == nil {
-		if frame.Type == protocol.FrameReset || frame.Type == protocol.FrameOpenError {
+		// Data/control already in flight may arrive after a local reset or
+		// graceful close. Repeated RESET replies can flood the control queue
+		// during a canceled upload; the stream's terminal frame is sufficient.
+		if retired || frame.Type == protocol.FrameReset || frame.Type == protocol.FrameOpenError {
 			return nil
 		}
 		_ = s.sendControl(protocol.Frame{Type: protocol.FrameReset, StreamID: frame.StreamID, Payload: []byte("unknown stream")})
@@ -300,9 +310,13 @@ func (s *Session) handleFrame(frame protocol.Frame) error {
 		stream.markOpened(fmt.Errorf("%w: %s", ErrStreamRejected, frame.Payload))
 		s.removeStream(frame.StreamID)
 	case protocol.FrameData:
-		return stream.receiveData(frame.Payload)
+		if err := stream.receiveData(frame.Payload); err != nil {
+			return stream.Reset(err)
+		}
 	case protocol.FrameWindowUpdate:
-		return stream.updateSendWindow(protocol.WindowAmount(frame))
+		if err := stream.updateSendWindow(protocol.WindowAmount(frame)); err != nil {
+			return stream.Reset(err)
+		}
 	case protocol.FrameFIN:
 		stream.receiveFIN()
 	case protocol.FrameReset:
@@ -327,6 +341,8 @@ func (s *Session) handleOpen(frame protocol.Frame) error {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: duplicate stream id %d", ErrProtocol, frame.StreamID)
 	}
+	// Concurrent client Open calls may enqueue their frames out of ID order.
+	s.lastID = max(s.lastID, frame.StreamID)
 	if len(s.streams) >= s.maxStreams {
 		s.mu.Unlock()
 		return s.sendControl(protocol.Frame{Type: protocol.FrameOpenError, StreamID: frame.StreamID, Payload: []byte("server stream limit reached")})
@@ -464,12 +480,20 @@ func (s *Session) sendControl(frame protocol.Frame) error {
 }
 
 func (s *Session) schedule(stream *Stream) error {
+	s.mu.Lock()
+	if s.streams[stream.id] != stream {
+		s.mu.Unlock()
+		return nil
+	}
 	select {
 	case <-s.done:
+		s.mu.Unlock()
 		return s.Err()
 	case s.ready <- stream.id:
+		s.mu.Unlock()
 		return nil
 	default:
+		s.mu.Unlock()
 		err := errors.New("multiplexing scheduler queue full")
 		s.shutdown(err)
 		return err
@@ -479,6 +503,17 @@ func (s *Session) schedule(stream *Stream) error {
 func (s *Session) removeStream(id uint32) {
 	s.mu.Lock()
 	delete(s.streams, id)
+	// Closed streams must not occupy scheduler slots while the transport is
+	// blocked. Serialize with schedule so a late requeue cannot put them back.
+	for range len(s.ready) {
+		select {
+		case queued := <-s.ready:
+			if queued != id {
+				s.ready <- queued
+			}
+		default:
+		}
+	}
 	s.mu.Unlock()
 }
 

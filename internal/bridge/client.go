@@ -81,6 +81,7 @@ func (c *Client) SetEndpoint(endpoint *Endpoint) {
 	if endpoint != nil {
 		go func() {
 			<-endpoint.Mux.Done()
+			c.logf("multiplexed session ended: %v", endpoint.Mux.Err())
 			if endpoint.Reset != nil {
 				endpoint.Reset()
 			}
@@ -181,10 +182,6 @@ func (c *Client) handle(parent context.Context, conn net.Conn, service string) {
 	c.mu.Unlock()
 	if err != nil {
 		c.logf("opening bridged stream for %s: %v", conn.RemoteAddr(), err)
-		if errors.Is(err, context.DeadlineExceeded) && endpoint.Reset != nil {
-			c.logf("multiplexed stream open stalled; resetting BLE session")
-			endpoint.Reset()
-		}
 		return
 	}
 	if err := ProxyWithTraffic(conn, stream, c.traffic); err != nil {

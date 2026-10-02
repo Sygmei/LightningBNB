@@ -1,6 +1,7 @@
 package link
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -120,10 +121,12 @@ type Session struct {
 	readDeadline  time.Time
 	writeDeadline time.Time
 
-	notify chan struct{}
-	done   chan struct{}
-	closed bool
-	err    error
+	notify           chan struct{}
+	done             chan struct{}
+	closed           bool
+	err              error
+	detachCount      uint64
+	lastDetachReason string
 }
 
 func NewSession(cfg Config) (*Session, error) {
@@ -314,11 +317,11 @@ func (s *Session) receiveLoop(ctx context.Context, b *binding) {
 			return
 		case packet, ok := <-b.conn.Receive():
 			if !ok {
-				s.failBinding(b, time.Now())
+				s.failBinding(b, time.Now(), errors.New("BLE receive channel closed"))
 				return
 			}
 			if err := s.handlePacket(b, packet); err != nil {
-				s.failBinding(b, time.Now())
+				s.failBinding(b, time.Now(), fmt.Errorf("receive packet: %w", err))
 				return
 			}
 		}
@@ -434,20 +437,37 @@ func (s *Session) acceptDataLocked(seq uint64, payload []byte) (advancedPackets 
 		return 0, false, false, ErrSequenceExhausted
 	}
 	end := seq + uint64(len(payload))
-	if seq < s.rxNext {
+	if end <= s.rxNext {
 		return 0, false, true, nil
+	}
+	// Retransmission starts at the cumulative ACK, not necessarily an original
+	// packet boundary. Keep the unseen suffix of partially delivered packets.
+	if seq < s.rxNext {
+		payload = payload[s.rxNext-seq:]
+		seq = s.rxNext
 	}
 	if end-s.rxNext > uint64(s.config.ReplayWindow) {
 		return 0, false, true, nil
 	}
-	if len(s.rxBuf)+s.rxPendingBytes+len(payload) > s.config.ReplayWindow {
-		return 0, false, true, nil
-	}
+	overlap := 0
 	for pendingSeq, pendingPayload := range s.rxPending {
 		pendingEnd := pendingSeq + uint64(len(pendingPayload))
 		if seq < pendingEnd && pendingSeq < end {
-			return 0, false, true, nil
+			if seq != s.rxNext {
+				return 0, false, true, nil
+			}
+			// A gap-filling replay may span retained fragments. Validate and
+			// count their overlap once, instead of rejecting the only packet
+			// that can unblock the receive window.
+			n := min(end, pendingEnd) - pendingSeq
+			if !bytes.Equal(payload[pendingSeq-seq:pendingSeq-seq+n], pendingPayload[:n]) {
+				return 0, false, false, errors.New("conflicting replay data")
+			}
+			overlap += int(n)
 		}
+	}
+	if len(s.rxBuf)+s.rxPendingBytes+len(payload)-overlap > s.config.ReplayWindow {
+		return 0, false, true, nil
 	}
 
 	if seq > s.rxNext {
@@ -464,9 +484,25 @@ func (s *Session) acceptDataLocked(seq uint64, payload []byte) (advancedPackets 
 		return 0, true, false, nil
 	}
 
+	// Remove covered fragments and preserve any suffix beyond this packet.
+	var suffix []byte
+	for pendingSeq, pendingPayload := range s.rxPending {
+		if pendingSeq >= end {
+			continue
+		}
+		delete(s.rxPending, pendingSeq)
+		s.rxPendingBytes -= len(pendingPayload)
+		if pendingEnd := pendingSeq + uint64(len(pendingPayload)); pendingEnd > end {
+			suffix = pendingPayload[end-pendingSeq:]
+		}
+	}
+	if len(suffix) > 0 {
+		s.rxPending[end] = suffix
+		s.rxPendingBytes += len(suffix)
+	}
 	s.rxBuf = append(s.rxBuf, payload...)
 	s.rxNext = end
-	s.stats.dataRXBytes += uint64(len(payload))
+	s.stats.dataRXBytes += uint64(len(payload) - overlap)
 	advancedPackets = 1
 	for {
 		pending, ok := s.rxPending[s.rxNext]
@@ -534,7 +570,7 @@ func (s *Session) sendLoop(ctx context.Context, b *binding) {
 		}
 		s.mu.Unlock()
 		if err != nil {
-			s.failBinding(b, time.Now())
+			s.failBinding(b, time.Now(), fmt.Errorf("send packet type %d: %w", packet[0], err))
 			return
 		}
 	}
@@ -627,7 +663,7 @@ func (s *Session) heartbeatLoop(ctx context.Context, b *binding) {
 		probe, detach := s.heartbeatCheckLocked(b, now)
 		s.mu.Unlock()
 		if detach {
-			s.failBinding(b, now)
+			s.failBinding(b, now, errors.New("heartbeat response failure limit reached"))
 			return
 		}
 		if !probe {
@@ -647,16 +683,37 @@ func (s *Session) heartbeatLoop(ctx context.Context, b *binding) {
 		}
 		if err == nil {
 			s.stats.heartbeatTX++
-			if s.current == b {
-				b.lastTX = time.Now()
-			}
 		}
+		detach = s.heartbeatSendResultLocked(b, sendStarted, time.Now(), err)
 		s.mu.Unlock()
-		if err != nil {
-			s.failBinding(b, time.Now())
+		if detach {
+			s.failBinding(b, time.Now(), fmt.Errorf("send heartbeat: %w", err))
 			return
 		}
 	}
+}
+
+func (s *Session) heartbeatSendResultLocked(b *binding, started, finished time.Time, err error) bool {
+	if s.current != b || s.closed {
+		return false
+	}
+	if err == nil {
+		b.lastTX = finished
+		if b.heartbeatPending {
+			// Allow a full response interval after the write actually completes.
+			b.heartbeatSentAt = finished
+		}
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) && !b.lastRX.Before(started) {
+		// ACK/DATA/PONG received while this probe waited for the send slot
+		// already proves liveness. Do not drop a productive bulk transfer.
+		b.heartbeatPending = false
+		b.heartbeatFailures = 0
+		b.heartbeatSentAt = finished
+		return false
+	}
+	return true
 }
 
 // heartbeatCheckLocked decides whether the next probe should be sent. It is
@@ -684,7 +741,7 @@ func (s *Session) heartbeatCheckLocked(b *binding, now time.Time) (probe, detach
 	return true, false
 }
 
-func (s *Session) failBinding(b *binding, detachedAt time.Time) {
+func (s *Session) failBinding(b *binding, detachedAt time.Time, reason error) {
 	s.mu.Lock()
 	if s.current != b || s.closed {
 		s.mu.Unlock()
@@ -692,12 +749,14 @@ func (s *Session) failBinding(b *binding, detachedAt time.Time) {
 	}
 	s.current = nil
 	s.detachedAt = detachedAt
+	s.detachCount++
+	s.lastDetachReason = reason.Error()
 	b.cancel()
 	s.signalLocked()
 	timeout := s.config.ResumeTimeout
 	s.mu.Unlock()
-	_ = b.conn.Close()
 	go s.expireAfter(detachedAt, timeout)
+	_ = b.conn.Close()
 }
 
 func (s *Session) expireAfter(detachedAt time.Time, timeout time.Duration) {

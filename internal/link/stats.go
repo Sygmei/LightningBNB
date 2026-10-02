@@ -7,6 +7,8 @@ import "time"
 // link framing and are intended only for troubleshooting transport stalls.
 type TransportSnapshot struct {
 	Bound                        bool
+	DetachCount                  uint64
+	LastDetachReason             string
 	HeartbeatPending             bool
 	HeartbeatConsecutiveFailures int
 	LastReceived                 time.Time
@@ -59,6 +61,8 @@ func (s *Session) TransportSnapshot() TransportSnapshot {
 
 	snapshot := TransportSnapshot{
 		Bound:                 s.current != nil && !s.closed,
+		DetachCount:           s.detachCount,
+		LastDetachReason:      s.lastDetachReason,
 		DataTXPackets:         s.stats.dataTXPackets,
 		DataTXBytes:           s.stats.dataTXBytes,
 		DataRXPackets:         s.stats.dataRXPackets,

@@ -46,17 +46,28 @@ The optional capability byte is omitted when zero, preserving the original boots
 | `PONG` | `0x07` | none |
 | `CLOSE` | `0x08` | none |
 
-Each direction is independent. A receiver delivers `DATA` only at its next expected offset, suppresses duplicates, and retains non-overlapping out-of-order packets inside the bounded receive window until a gap is filled. It returns a cumulative `ACK` for the next contiguous byte. Under continuous traffic, ACKs are coalesced after up to eight packets or 40 milliseconds; gaps, duplicates, and receive pressure trigger an immediate ACK. A sender starts with eight MTU-sized `DATA` packets in flight, grows its window additively to at most 32 packets while cumulative acknowledgements advance, and halves it on timeout or fast retransmission. This keeps the link pipelined without returning to long one-directional GATT bursts. It retains unacknowledged data in a 1 MiB replay window and restarts from the oldest outstanding fragment after one second or three duplicate acknowledgements. While connected, new writes are limited to a 16 KiB live window so multiplexing control frames cannot sit behind a long bulk-data train. Offline buffering can still use the full replay window.
+Each direction is independent. A receiver delivers `DATA` only at its next expected offset, suppresses duplicates, and retains non-overlapping out-of-order packets inside the bounded receive window until a gap is filled. It returns a cumulative `ACK` for the next contiguous byte. Under continuous traffic, ACKs are coalesced after up to eight packets or 40 milliseconds; gaps, duplicates, and receive pressure trigger an immediate ACK. A sender starts with eight MTU-sized `DATA` packets in flight, grows its window additively to at most 128 packets while cumulative acknowledgements advance, and halves it on timeout or fast retransmission. This keeps the link pipelined without returning to long one-directional GATT bursts. It retains unacknowledged data in a 1 MiB replay window and restarts from the oldest outstanding fragment after one second or three duplicate acknowledgements. While connected, new writes are limited to a 64 KiB live window so multiplexing control frames cannot sit behind a long bulk-data train. Offline buffering can still use the full replay window.
 
-An idle peer emits an active `PING` after five seconds without receiving a
-packet and expects a response within three seconds. Each unanswered probe is
-counted; three consecutive failures mark the physical link detached (roughly
-14 seconds after the last received packet). Any valid packet, including
-`PONG`, clears the failure count. The existing client/server reconnect loops
+A peer emits an active `PING` every three seconds and allows two seconds
+for a response after the send completes. Two consecutive unanswered probes
+mark the physical link detached. Any valid packet, including `PONG`, clears
+the failure count. Senders queue concurrent writes so bulk DATA cannot
+starve a heartbeat waiting for the send slot. A heartbeat send timeout does
+not detach the link when incoming packets during that wait already prove
+liveness. The existing client/server reconnect loops
 then rebind the same in-memory session, preserving TCP streams until the
 resume deadline measured from detachment. A process restart is not required
 and would intentionally discard that resumable state. BLE connection callbacks
 and read/write errors may detect detachment sooner.
+
+Retransmissions may have different packet boundaries from the original sends.
+The receiver trims already-delivered prefixes and merges matching overlaps
+with retained fragments when filling a gap, within the same receive bound.
+Conflicting replay bytes fail the binding instead of corrupting the stream.
+
+Disconnect diagnostics report receive closure, packet errors, heartbeat send
+errors, or exhausted heartbeat responses. Clients try the last known device
+once before a full discovery scan.
 
 `CLOSE` ends the logical session. A detached transport does not emit `CLOSE`; it waits for reattachment until the negotiated timeout.
 
@@ -87,7 +98,7 @@ Each stream starts with a 64 KiB receive window. `DATA` consumes window space, a
 
 With compression negotiated, each `DATA` payload starts with an encoding byte: `0` carries raw bytes and `1` carries a DEFLATE stream. Uncompressed frame chunks are limited to 16383 bytes so the marker still fits the 16 KiB frame bound. Senders keep data raw unless compression makes the frame smaller. Receivers bound decompression to 16383 bytes and apply stream windows to the uncompressed size. `WINDOW_UPDATE` frames are accumulated in 8 KiB increments.
 
-`FIN` closes only the sender's write direction and maps to TCP `CloseWrite`, allowing reverse traffic to continue. `RESET` terminates both directions after an error. Session failure resets every remaining stream.
+`FIN` closes only the sender's write direction and maps to TCP `CloseWrite`, allowing reverse traffic to continue. `RESET` terminates both directions after an error. Malformed compressed DATA and stream-window/state errors reset only the affected stream. Late frames for a retired stream are discarded without producing a flood of RESET replies. A timed-out OPEN cancels only that stream. Unreadable framing and underlying session failure still reset every remaining stream.
 
 ## Compatibility and security
 

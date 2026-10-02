@@ -249,7 +249,7 @@ type serverPacketConn struct {
 	done     chan struct{}
 	once     sync.Once
 	onClose  func()
-	sendMu   sync.Mutex
+	sendMu   packetSendLock
 }
 
 func newServerPacketConn(tx *bluetooth.Characteristic) *serverPacketConn {

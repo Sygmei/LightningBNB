@@ -56,3 +56,29 @@ For a normal forwarding target, verify a compressed client transfers repetitive 
 - macOS client: test both Intel and Apple Silicon when available, grant and revoke terminal Bluetooth permission, and confirm server mode returns the documented unsupported error. Run the interactive picker and immediately start a benchmark with its stable `lbnb:` selection; the identity probe must be reused for the transport rather than causing an empty-device panic during service discovery.
 
 Record observed throughput only as diagnostic information. It is not a compatibility gate beyond carrying interactive/modest-rate traffic without corruption.
+
+## Compressed LLM forwarding regression (macOS client, Ubuntu server)
+
+Build this revision on both hosts and retain the existing service mappings.
+Enable `--compression` on both sides and `--transport-debug` on the client.
+
+1. Retry the previously failing DSH request and then send a larger conversation
+   containing Unicode, escaped control characters, tool schemas, and long tool
+   results. Verify ninfer receives the complete request and SSE completes.
+2. During a sustained upload, verify ACK progress continues and no heartbeat
+   send-slot timeout detaches the link. Log any `BLE link detached:` reason;
+   the old `mtu=0` counters alone did not identify the cause.
+3. Cancel a request during upload and during streaming output, then retry it.
+   Keep a second service connection active and verify cancellation or target
+   rejection affects only the canceled request.
+4. Briefly interrupt BLE during the upload. Verify the client first logs
+   `reconnecting to last known platform device`, resumes within the configured
+   deadline, and delivers the payload without missing or duplicated bytes.
+5. Repeat with compression disabled to distinguish compressed traffic patterns
+   from adapter/OS behavior. Record both endpoint versions and disconnect logs.
+
+Automated coverage includes arbitrary binary/Unicode payloads across stream
+windows, compressed uploads over simulated loss/reordering/duplication and
+MTU-changing reconnects, heartbeat contention, stream cancellation isolation,
+and fuzz tests for compression and resegmented replay. This does not replace
+physical-adapter validation.
